@@ -15,7 +15,7 @@ from .playback import PlaybackHandler
 
 # Lazy-load external libraries when they're needed
 soundfile = lazy.load("soundfile")
-taglib = lazy.load("taglib")
+# taglib = lazy.load("taglib")
 
 class MusicLooper:
     """High-level API access to PyMusicLooper's main functions."""
@@ -27,6 +27,53 @@ class MusicLooper:
         """
         self.mlaudio = MLAudio(filepath=filepath)
 
+    def _select_diverse_loops(self, loop_pairs: List[LoopPair], num_loops: Optional[int] = None) -> List[LoopPair]:
+        """Selects a diverse set of loops by considering both score and position in the track.
+        
+        Args:
+            loop_pairs: List of candidate loop pairs
+            num_loops: Number of loops to select. If None, returns all loops.
+        
+        Returns:
+            List of selected diverse loop pairs
+        """
+        if not loop_pairs or num_loops == 1:
+            return loop_pairs[:num_loops] if num_loops else loop_pairs
+        
+        # Sort by score first
+        sorted_pairs = sorted(loop_pairs, key=lambda x: x.score, reverse=True)
+        
+        if num_loops is None:
+            return sorted_pairs
+        
+        # Take top 25% of loops by score as candidates
+        num_candidates = max(num_loops * 4, len(sorted_pairs))
+        candidates = sorted_pairs[:num_candidates]
+        
+        selected = [candidates[0]]  # Start with highest scoring loop
+        candidates = candidates[1:]
+        
+        while len(selected) < num_loops and candidates:
+            # Calculate minimum distance to any selected loop for each candidate
+            min_distances = []
+            for candidate in candidates:
+                distances = []
+                for selected_loop in selected:
+                    # Calculate distance between loop start points
+                    start_dist = abs(candidate.loop_start - selected_loop.loop_start)
+                    # Calculate distance between loop end points  
+                    end_dist = abs(candidate.loop_end - selected_loop.loop_end)
+                    # Use minimum of start and end distances
+                    distances.append(min(start_dist, end_dist))
+                min_distances.append(min(distances))
+            
+            # Find candidate with maximum minimum distance
+            max_min_dist_idx = max(range(len(min_distances)), key=min_distances.__getitem__)
+            selected.append(candidates[max_min_dist_idx])
+            candidates.pop(max_min_dist_idx)
+        
+        return selected
+
     def find_loop_pairs(
         self,
         min_duration_multiplier: float = 0.35,
@@ -36,6 +83,7 @@ class MusicLooper:
         approx_loop_end: Optional[float] = None,
         brute_force: bool = False,
         disable_pruning: bool = False,
+        num_loops: Optional[int] = None,
     ) -> List[LoopPair]:
         """Finds the best loop points for the track, according to the parameters specified.
 
@@ -47,6 +95,7 @@ class MusicLooper:
             approx_loop_end (float, optional): The approximate location of the desired loop end (in seconds). If specified, must specify approx_loop_start as well. Defaults to None.
             brute_force (bool, optional): Checks the entire track instead of the detected beats (disclaimer: runtime may be significantly longer). Defaults to False.
             disable_pruning (bool, optional): Returns all the candidate loop points without filtering. Defaults to False.
+            num_loops (int, optional): Number of best scoring loops to return. If None, returns all loops. Defaults to None.
         
         Raises:
             LoopNotFoundError: raised in case no loops were found
@@ -54,7 +103,8 @@ class MusicLooper:
         Returns:
             List[LoopPair]: A list of `LoopPair` objects containing the loop points related data. See the `LoopPair` class for more info.
         """
-        return find_best_loop_points(
+        # Get all loop pairs
+        all_loop_pairs = find_best_loop_points(
             mlaudio=self.mlaudio,
             min_duration_multiplier=min_duration_multiplier,
             min_loop_duration=min_loop_duration,
@@ -64,6 +114,20 @@ class MusicLooper:
             brute_force=brute_force,
             disable_pruning=disable_pruning
         )
+
+        # Convert min and max duration from seconds to samples
+        min_loop_duration_samples = self.seconds_to_samples(min_loop_duration) if min_loop_duration else None
+        max_loop_duration_samples = self.seconds_to_samples(max_loop_duration) if max_loop_duration else None
+
+        # Filter loop pairs based on min and max duration
+        filtered_loop_pairs = [
+            loop_pair for loop_pair in all_loop_pairs
+            if (min_loop_duration_samples is None or min_loop_duration_samples <= loop_pair.loop_end - loop_pair.loop_start)
+            and (max_loop_duration_samples is None or loop_pair.loop_end - loop_pair.loop_start <= max_loop_duration_samples)
+        ]
+
+        # Select diverse loops
+        return self._select_diverse_loops(filtered_loop_pairs, num_loops)
 
     @property
     def filename(self) -> str:
@@ -116,6 +180,7 @@ class MusicLooper:
         self,
         loop_start: int,
         loop_end: int,
+        filename: Optional[str] = None,
         format: str = "WAV",
         output_dir: Optional[str] = None
     ):
@@ -127,30 +192,48 @@ class MusicLooper:
             format (str, optional): Audio format of the exported files (formats available depend on the `soundfile` library). Defaults to "WAV".
             output_dir (str, optional): Path to the output directory. Defaults to the same diretcory as the source audio file.
         """
+        if filename is None:
+            filename = self.mlaudio.filename
+
         if output_dir is not None:
-            out_path = os.path.join(output_dir, self.mlaudio.filename)
+            out_path = os.path.join(output_dir, filename)
         else:
             out_path = os.path.abspath(self.mlaudio.filepath)
 
-        soundfile.write(
-            f"{out_path}-intro.{format.lower()}",
-            self.mlaudio.playback_audio[:loop_start],
-            self.mlaudio.rate,
-            format=format,
-        )
+        # soundfile.write(
+        #     f"{out_path}-intro.{format.lower()}",
+        #     self.mlaudio.playback_audio[:loop_start],
+        #     self.mlaudio.rate,
+        #     format=format,
+        # )
         soundfile.write(
             f"{out_path}-loop.{format.lower()}",
             self.mlaudio.playback_audio[loop_start:loop_end],
             self.mlaudio.rate,
             format=format,
         )
-        soundfile.write(
-            f"{out_path}-outro.{format.lower()}",
-            self.mlaudio.playback_audio[loop_end:],
-            self.mlaudio.rate,
-            format=format,
-        )
+        # soundfile.write(
+        #     f"{out_path}-outro.{format.lower()}",
+        #     self.mlaudio.playback_audio[loop_end:],
+        #     self.mlaudio.rate,
+        #     format=format,
+        # )
 
+    def export_all_loops(self, format: str = "WAV", output_dir: Optional[str] = None):
+        """Exports all loops to files."""
+
+        # Get all loop pairs
+        all_loop_pairs = self.find_loop_pairs()
+
+        # Export each loop to a file
+        for i, loop_pair in enumerate(all_loop_pairs):
+            self.export(
+                loop_start=loop_pair.loop_start,
+                loop_end=loop_pair.loop_end,
+                format=format,
+                output_dir=output_dir
+            )
+    
     def extend(
         self,
         loop_start: int,
@@ -275,66 +358,66 @@ class MusicLooper:
         with open(out_path, "a") as file:
             file.write(f"{loop_start} {loop_end} {self.mlaudio.filename}\n")
 
-    def export_tags(
-        self,
-        loop_start: int,
-        loop_end: int,
-        loop_start_tag: str,
-        loop_end_tag: str,
-        output_dir: Optional[str] = None
-    ):
-        """Adds metadata tags of loop points to a copy of the source audio file.
+    # def export_tags(
+    #     self,
+    #     loop_start: int,
+    #     loop_end: int,
+    #     loop_start_tag: str,
+    #     loop_end_tag: str,
+    #     output_dir: Optional[str] = None
+    # ):
+    #     """Adds metadata tags of loop points to a copy of the source audio file.
 
-        Args:
-            loop_start (int): Loop start in samples.
-            loop_end (int): Loop end in samples.
-            loop_start_tag (str): Name of the loop_start metadata tag.
-            loop_end_tag (str): Name of the loop_end metadata tag.
-            output_dir (str, optional): Path to the output directory. Defaults to the same diretcory as the source audio file.
-        """
-        if output_dir is None:
-            output_dir = os.path.abspath(self.mlaudio.filepath)
+    #     Args:
+    #         loop_start (int): Loop start in samples.
+    #         loop_end (int): Loop end in samples.
+    #         loop_start_tag (str): Name of the loop_start metadata tag.
+    #         loop_end_tag (str): Name of the loop_end metadata tag.
+    #         output_dir (str, optional): Path to the output directory. Defaults to the same diretcory as the source audio file.
+    #     """
+    #     if output_dir is None:
+    #         output_dir = os.path.abspath(self.mlaudio.filepath)
 
-        track_name, file_extension = os.path.splitext(self.mlaudio.filename)
+    #     track_name, file_extension = os.path.splitext(self.mlaudio.filename)
 
-        exported_file_path = os.path.join(
-            output_dir, f"{track_name}-tagged{file_extension}"
-        )
-        shutil.copyfile(self.mlaudio.filepath, exported_file_path)
+    #     exported_file_path = os.path.join(
+    #         output_dir, f"{track_name}-tagged{file_extension}"
+    #     )
+    #     shutil.copyfile(self.mlaudio.filepath, exported_file_path)
 
-        with taglib.File(exported_file_path, save_on_exit=True) as audio_file:
-            audio_file.tags[loop_start_tag] = [str(loop_start)]
-            audio_file.tags[loop_end_tag] = [str(loop_end)]
+    #     with taglib.File(exported_file_path, save_on_exit=True) as audio_file:
+    #         audio_file.tags[loop_start_tag] = [str(loop_start)]
+    #         audio_file.tags[loop_end_tag] = [str(loop_end)]
 
 
-    def read_tags(self, loop_start_tag: str, loop_end_tag: str) -> Tuple[int, int]:
-        """Reads the tags provided from the file and returns the read loop points
+    # def read_tags(self, loop_start_tag: str, loop_end_tag: str) -> Tuple[int, int]:
+    #     """Reads the tags provided from the file and returns the read loop points
 
-        Args:
-            loop_start_tag (str): The name of the metadata tag containing the loop_start value
-            loop_end_tag (str): The name of the metadata tag containing the loop_end value
+    #     Args:
+    #         loop_start_tag (str): The name of the metadata tag containing the loop_start value
+    #         loop_end_tag (str): The name of the metadata tag containing the loop_end value
 
-        Returns:
-            Tuple[int, int]: A tuple containing (loop_start, loop_end)
-        """
-        loop_start = None
-        loop_end = None
+    #     Returns:
+    #         Tuple[int, int]: A tuple containing (loop_start, loop_end)
+    #     """
+    #     loop_start = None
+    #     loop_end = None
 
-        with taglib.File(self.filepath) as audio_file:
-            if loop_start_tag not in audio_file.tags:
-                raise ValueError(f"The tag \"{loop_start_tag}\" is not present in the metadata of \"{self.filename}\".")
-            if loop_end_tag not in audio_file.tags:
-                raise ValueError(f"The tag \"{loop_end_tag}\" is not present in the metadata of \"{self.filename}\".")
-            try:
-                loop_start = int(audio_file.tags[loop_start_tag][0])
-                loop_end = int(audio_file.tags[loop_end_tag][0])
-            except Exception as e:
-                raise TypeError(
-                    "One of the tags provided has invalid (non-integer or empty) values"
-                ) from e
+    #     with taglib.File(self.filepath) as audio_file:
+    #         if loop_start_tag not in audio_file.tags:
+    #             raise ValueError(f"The tag \"{loop_start_tag}\" is not present in the metadata of \"{self.filename}\".")
+    #         if loop_end_tag not in audio_file.tags:
+    #             raise ValueError(f"The tag \"{loop_end_tag}\" is not present in the metadata of \"{self.filename}\".")
+    #         try:
+    #             loop_start = int(audio_file.tags[loop_start_tag][0])
+    #             loop_end = int(audio_file.tags[loop_end_tag][0])
+    #         except Exception as e:
+    #             raise TypeError(
+    #                 "One of the tags provided has invalid (non-integer or empty) values"
+    #             ) from e
 
-        # Re-order the loop points in case
-        real_loop_start = min(loop_start, loop_end)
-        real_loop_end = max(loop_start, loop_end)
+    #     # Re-order the loop points in case
+    #     real_loop_start = min(loop_start, loop_end)
+    #     real_loop_end = max(loop_start, loop_end)
 
-        return real_loop_start, real_loop_end
+    #     return real_loop_start, real_loop_end

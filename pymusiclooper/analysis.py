@@ -168,18 +168,45 @@ def find_best_loop_points(
             f"No loop points found for \"{mlaudio.filename}\" with current parameters."
         )
 
-    filtered_candidate_pairs = _assess_and_filter_loop_pairs(
-        mlaudio, chroma, bpm, candidate_pairs, disable_pruning
+    # Calculate scores for all pairs first
+    beats_per_second = bpm / 60
+    num_test_beats = 12
+    seconds_to_test = num_test_beats / beats_per_second
+    test_offset = mlaudio.samples_to_frames(int(seconds_to_test * mlaudio.rate))
+
+    # adjust offset for very short tracks to 25% of its length
+    if test_offset > chroma.shape[-1]:
+        test_offset = chroma.shape[-1] // 4
+
+    weights = _weights(test_offset, start=max(2, test_offset // num_test_beats), stop=1)
+
+    pair_score_list = [
+        _calculate_loop_score(
+            int(pair._loop_start_frame_idx),
+            int(pair._loop_end_frame_idx),
+            chroma,
+            test_duration=test_offset,
+            weights=weights,
+        )
+        for pair in candidate_pairs
+    ]
+    # Add cosine similarity as score
+    for pair, score in zip(candidate_pairs, pair_score_list):
+        pair.score = score
+
+    # Sort all pairs by score before any pruning
+    candidate_pairs = sorted(
+        candidate_pairs, reverse=True, key=lambda x: x.score
     )
 
-    # prefer longer loops for highly similar sequences
-    if len(filtered_candidate_pairs) > 1:
-        _prioritize_duration(filtered_candidate_pairs)
+    # Only prune if requested
+    if not disable_pruning:
+        candidate_pairs = _prune_candidates(candidate_pairs)
 
     # Set the exact loop start and end in samples and adjust them
     # to the nearest zero crossing. Avoids audio popping/clicking while looping
     # as much as possible.
-    for pair in filtered_candidate_pairs:
+    for pair in candidate_pairs:
         if mlaudio.trim_offset > 0:
             pair._loop_start_frame_idx = int(
                 mlaudio.apply_trim_offset(pair._loop_start_frame_idx)
@@ -198,19 +225,19 @@ def find_best_loop_points(
             mlaudio.frames_to_samples(pair._loop_end_frame_idx)
         )
 
-    if not filtered_candidate_pairs:
+    if not candidate_pairs:
         raise LoopNotFoundError(
             f"No loop points found for {mlaudio.filename} with current parameters."
         )
 
     logging.info(
-        f"Filtered to {len(filtered_candidate_pairs)} best candidate loop points"
+        f"Filtered to {len(candidate_pairs)} best candidate loop points"
     )
     logging.info(
         f"Total analysis runtime: {time.perf_counter() - runtime_start:.3f}s"
     )
 
-    return filtered_candidate_pairs
+    return candidate_pairs
 
 
 def _analyze_audio(
@@ -299,13 +326,14 @@ def _find_candidate_pairs(
 
     deviation = _norm(chroma[..., beats] * ACCEPTABLE_NOTE_DEVIATION)
 
+    # Iterate through all possible combinations
     for idx, loop_end in enumerate(beats):
         for loop_start in beats:
             loop_length = loop_end - loop_start
-            if loop_length < min_loop_duration:
-                break
-            if loop_length > max_loop_duration:
+            # Skip invalid durations but continue searching
+            if loop_length < min_loop_duration or loop_length > max_loop_duration:
                 continue
+                
             note_distance = _norm(chroma[..., loop_end] - chroma[..., loop_start])
 
             if note_distance <= deviation[idx]:

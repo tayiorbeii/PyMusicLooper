@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "pymusiclooper"
+name = "youtube-loop-finder"
 version = "3.2.2"
 description = "Repeat music endlessly and create seamless music loops, with play/export/tagging support."
 license = "MIT"
@@ -37,6 +37,15 @@ yt-dlp = ">=2023.11.16"
 click-params = "^0.4.1"
 click-option-group = "^0.5.6"
 lazy-loader = ">=0.3"
+google-images-download = "^2.8.0"
+google-images-search = "^1.4.6"
+glitch-this = "^1.0.2"
+randimage = "^1.2"
+pillow = "^10.2.0"
+moviepy = "^1.0.3"
+ffmpeg-python = "^0.2.0"
+imageio = "^2.33.1"
+pymusiclooper = "^3.2.2"
 
 [tool.poetry.scripts]
 pymusiclooper = 'pymusiclooper.__main__:cli'
