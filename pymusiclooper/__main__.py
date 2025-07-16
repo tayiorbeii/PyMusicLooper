@@ -1,14 +1,13 @@
-import logging
+"""Main entry point for PyMusicLooper."""
 
-from .cli import cli_main
+import sys
+from pymusiclooper.core.core import MusicLooper
+from pymusiclooper.utils.handler import CLIHandler
 
-
-def cli():
-    try:
-        cli_main(prog_name="pymusiclooper")
-    except Exception as e:
-        logging.error(e)
-
+def main():
+    """Main entry point for the application."""
+    handler = CLIHandler()
+    handler.run()
 
 if __name__ == "__main__":
-    cli()
+    main()
