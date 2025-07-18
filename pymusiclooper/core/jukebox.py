@@ -62,7 +62,8 @@ class InfiniteJukebox:
                  max_connections_per_section: int = 10,
                  min_section_duration: float = 2.0,
                  max_section_duration: float = 8.0,
-                 num_section_clusters: int = 4):
+                 num_section_clusters: int = 4,
+                 use_loops: bool = True):
         """
         Initialize the Infinite Jukebox remixer.
         
@@ -77,6 +78,7 @@ class InfiniteJukebox:
         self.min_section_duration = min_section_duration
         self.max_section_duration = max_section_duration
         self.num_section_clusters = num_section_clusters
+        self.use_loops = use_loops
         self.section_labels: Optional[np.ndarray] = None  # cluster label per node
         self.nodes: List[SectionNode] = []
         self.connection_map: Dict[int, List[SectionConnection]] = {}
@@ -110,8 +112,11 @@ class InfiniteJukebox:
         self.chroma = chroma
         self.bpm = bpm
         
-        # Create section nodes from beats
-        self._create_section_nodes(mlaudio, chroma, power_db, beats, bpm)
+        # Create section nodes
+        if self.use_loops:
+            self._create_section_nodes_from_loops(mlaudio, chroma, power_db, bpm)
+        else:
+            self._create_section_nodes(mlaudio, chroma, power_db, beats, bpm)
         
         # Find connections between similar sections
         self._find_section_connections(mlaudio, chroma, bpm)
@@ -348,6 +353,71 @@ class InfiniteJukebox:
         power_b = np.mean(np.max(node_b.power_features, axis=0))
         
         return abs(power_a - power_b)
+
+    # ------------------------------------------------------------------
+    # Loop-based section creation
+    # ------------------------------------------------------------------
+
+    def _create_section_nodes_from_loops(
+        self,
+        mlaudio: MLAudio,
+        chroma: np.ndarray,
+        power_db: np.ndarray,
+        bpm: float,
+    ) -> None:
+        """Create section nodes from automatically discovered loops instead of beats."""
+
+        from .analysis import find_best_loop_points  # local import to avoid circular deps
+
+        min_frames = mlaudio.seconds_to_frames(self.min_section_duration)
+        max_frames = mlaudio.seconds_to_frames(self.max_section_duration)
+
+        # Detect loops
+        loop_pairs = find_best_loop_points(
+            mlaudio,
+            min_loop_duration=self.min_section_duration,
+            max_loop_duration=self.max_section_duration,
+            disable_pruning=False,
+        )
+
+        logging.info("Creating sections from %d discovered loops", len(loop_pairs))
+
+        self.nodes = []
+
+        for idx, pair in enumerate(loop_pairs):
+            start_sample = int(pair.loop_start)
+            end_sample = int(pair.loop_end)
+
+            # Convert to frames
+            start_frame = mlaudio.samples_to_frames(start_sample)
+            end_frame = mlaudio.samples_to_frames(end_sample)
+
+            if end_frame - start_frame < min_frames:
+                continue
+            if end_frame - start_frame > max_frames:
+                # Trim to max_frames to keep uniformity
+                end_frame = start_frame + max_frames
+                end_sample = mlaudio.frames_to_samples(end_frame)
+
+            if end_frame >= chroma.shape[-1]:
+                end_frame = chroma.shape[-1] - 1
+                end_sample = mlaudio.frames_to_samples(end_frame)
+                if end_frame - start_frame < min_frames:
+                    continue
+
+            node = SectionNode(
+                start_frame=start_frame,
+                end_frame=end_frame,
+                start_sample=start_sample,
+                end_sample=end_sample,
+                beat_index=idx,  # treat loop index as beat index analogue
+                chroma_features=chroma[:, start_frame:end_frame],
+                power_features=power_db[:, start_frame:end_frame],
+                connections=[],
+            )
+            self.nodes.append(node)
+
+        logging.info("Created %d loop-based sections", len(self.nodes))
 
     # ------------------------------------------------------------------
     # Section clustering & composition generation
