@@ -305,13 +305,13 @@ class MusicLooper:
             + (outro.shape[0] if disable_fade_out else 0)
         )
         total_length_seconds = self.mlaudio.samples_to_seconds(extended_audio_length)
-        duration_sec = ceil(total_length_seconds%60)
+        duration_sec = int(ceil(total_length_seconds%60))   
         duration_mins = int(total_length_seconds//60)
         if duration_sec == 60:
             duration_sec = 0
             duration_mins += 1
         extended_audio_length_fmt = (
-            f"{duration_mins:d}m{duration_sec:02d}s"
+            f"{int(duration_mins)}m{int(duration_sec):02d}s"
         )
         output_file_path = (
             f"{out_path}-extended-{extended_audio_length_fmt}.{format.lower()}"

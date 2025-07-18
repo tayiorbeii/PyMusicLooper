@@ -16,10 +16,9 @@ from click_option_group import RequiredMutuallyExclusiveOptionGroup, optgroup
 from click_params import PUBLIC_URL as UrlParamType
 
 from . import __version__
-from .console import _COMMAND_GROUPS, _OPTION_GROUPS, rich_console
-from .core import MusicLooper
-from .exceptions import AudioLoadError, LoopNotFoundError
-from .handler import BatchHandler, LoopExportHandler, LoopHandler
+from .utils.console import _COMMAND_GROUPS, _OPTION_GROUPS, rich_console
+from .core import MusicLooper, AudioLoadError, LoopNotFoundError
+from .utils.handler import BatchHandler, LoopExportHandler, LoopHandler, JukeboxHandler
 from .utils import download_audio, mk_outputdir
 
 # CLI --help styling
@@ -220,12 +219,64 @@ def tag(**kwargs):
     run_handler(**kwargs)
 
 
+@cli_main.command()
+@common_path_options
+@common_export_options
+@click.option('--target-duration', type=float, required=True, help='Target duration of the remixed song in seconds.')
+@click.option('--format', type=click.Choice(("WAV", "FLAC", "OGG", "MP3"), case_sensitive=False), default="MP3", show_default=True, help="Audio format to use for the remixed audio file.")
+@click.option('--similarity-threshold', type=click.FloatRange(0.0, 1.0), default=0.7, show_default=True, help='Minimum similarity score for sections to be considered similar (0.0-1.0).')
+@click.option('--jump-probability', type=click.FloatRange(0.0, 1.0), default=0.3, show_default=True, help='Probability of jumping to a similar section vs. continuing sequentially (0.0-1.0).')
+@click.option('--max-connections', type=int, default=10, show_default=True, help='Maximum number of connections per section.')
+@click.option('--min-section-duration', type=float, default=2.0, show_default=True, help='Minimum duration of each section in seconds.')
+@click.option('--max-section-duration', type=float, default=8.0, show_default=True, help='Maximum duration of each section in seconds.')
+@click.option('--prefer-similar', is_flag=True, default=True, help='Prefer jumping to more similar sections when making connections.')
+@click.option('--seed', type=int, default=None, help='Random seed for reproducible results.')
+@click.option('--fade-duration', type=click.FloatRange(min=0.0), default=0.1, show_default=True, help='Duration of crossfade between sections in seconds.')
+@click.option('--suggest-ranges', is_flag=True, default=False, help='Display recommended parameter ranges and exit.')
+def jukebox(**kwargs):
+    """Create an Infinite Jukebox-style remix by rearranging similar sections of the song."""
+    # If user only wants the suggested ranges, show them and exit early.
+    if kwargs.pop("suggest_ranges", False):
+        rich_console.print("[bold cyan]Recommended Parameter Ranges[/]")
+        rich_console.print("• min-section-duration: 0.25 – 2.0 s (smaller enables more, shorter sections)")
+        rich_console.print("• max-section-duration: 4 – 12 s (upper bound for section length)")
+        rich_console.print("• similarity-threshold: 0.40 – 0.80 (lower = more connections, higher = stricter)")
+        rich_console.print("• jump-probability: 0.20 – 0.50 (chance of jumping vs. sequential play)")
+        rich_console.print("• max-connections: 5 – 20 (connections kept per section)")
+        rich_console.print("• fade-duration: 0.05 – 0.50 s (cross-fade length between sections)")
+        rich_console.print("\nTune these depending on song tempo/structure; shorter sections and lower similarity make a more chaotic remix, higher values create fewer, longer jumps.")
+        return
+
+    try:
+        if kwargs.get("url", None) is not None:
+            kwargs["output_dir"] = mk_outputdir(os.getcwd(), kwargs["output_dir"])
+            kwargs["path"] = download_audio(kwargs["url"], kwargs["output_dir"])
+        else:
+            kwargs["output_dir"] = mk_outputdir(kwargs["path"], kwargs["output_dir"])
+
+        if os.path.isfile(kwargs["path"]):
+            with Progress(
+                SpinnerColumn(),
+                *Progress.get_default_columns(),
+                TimeElapsedColumn(),
+                console=rich_console,
+                transient=True
+            ) as progress:
+                progress.add_task("Analyzing song structure...", total=None)
+                jukebox_handler = JukeboxHandler(**kwargs)
+            jukebox_handler.run()
+        else:
+            rich_console.print(f"[red]Error: File not found: {kwargs['path']}[/]")
+    except (AudioLoadError, LoopNotFoundError, Exception) as e:
+        print_exception(e)
+
+
 def run_handler(**kwargs):
     try:
         if kwargs.get("url", None) is not None:
             kwargs["output_dir"] = mk_outputdir(os.getcwd(), kwargs["output_dir"])
             kwargs["path"] = download_audio(kwargs["url"], kwargs["output_dir"])
-        else:  
+        else:
             kwargs["output_dir"] = mk_outputdir(kwargs["path"], kwargs["output_dir"])
 
         if os.path.isfile(kwargs["path"]):

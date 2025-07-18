@@ -49,6 +49,7 @@ _OPTION_GROUPS = {
     "pymusiclooper tag": _option_groups(["--tag-names"]),
     "pymusiclooper export-points": _option_groups(["--export-to", "--alt-export-top"]),
     "pymusiclooper extend": _option_groups(["--extended-length", "--fade-length", "--disable-fade-out"]),
+    "pymusiclooper jukebox": _option_groups(["--target-duration", "--similarity-threshold", "--jump-probability", "--max-connections", "--min-section-duration", "--max-section-duration", "--prefer-similar", "--seed", "--fade-duration"]),
 }
 _COMMAND_GROUPS = {
     "pymusiclooper": [
@@ -66,6 +67,12 @@ _COMMAND_GROUPS = {
                 "split-audio",
                 "tag",
                 "extend",
+            ],
+        },
+        {
+            "name": "Remix Commands",
+            "commands": [
+                "jukebox",
             ],
         }
     ]

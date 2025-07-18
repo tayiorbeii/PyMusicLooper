@@ -7,6 +7,19 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.11"
+numpy = "^1.26"
+scipy = "^1.11"
+librosa = "^0.10"
+numba = "^0.58"
+click = "^8.1"
+rich = "^13.7"
+rich-click = "^1.7"
+click-option-group = "^0.5"
+click-params = "^0.4"
+yt-dlp = "^2024.4"
+lazy-loader = "^0.3"
+soundfile = "^0.12"
+sounddevice = "^0.4"
 
 
 [build-system]

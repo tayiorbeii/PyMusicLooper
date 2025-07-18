@@ -6,10 +6,8 @@ from typing import List, Optional, Tuple
 from rich.progress import MofNCompleteColumn, Progress, SpinnerColumn, TimeElapsedColumn
 from rich.table import Table
 
-from .analysis import LoopPair
+from ..core import LoopPair, MusicLooper, AudioLoadError, LoopNotFoundError
 from .console import rich_console
-from .core import MusicLooper
-from .exceptions import AudioLoadError, LoopNotFoundError
 
 
 class LoopHandler:
@@ -466,3 +464,142 @@ class BatchHandler:
             logging.error(e)
         except Exception as e:
             logging.error(e)
+
+
+class JukeboxHandler:
+    """Handler for generating remixed versions of songs using the Infinite Jukebox algorithm."""
+    
+    def __init__(
+        self,
+        *,
+        path: str,
+        output_dir: str,
+        target_duration: float,
+        similarity_threshold: float = 0.7,
+        jump_probability: float = 0.3,
+        max_connections: int = 10,
+        min_section_duration: float = 2.0,
+        max_section_duration: float = 8.0,
+        prefer_similar: bool = True,
+        seed: Optional[int] = None,
+        format: str = "MP3",
+        fade_duration: float = 0.1,
+        **kwargs,
+    ):
+        from ..core import InfiniteJukebox, MLAudio
+        
+        self.path = path
+        self.output_dir = output_dir
+        self.target_duration = target_duration
+        self.similarity_threshold = similarity_threshold
+        self.jump_probability = jump_probability
+        self.max_connections = max_connections
+        self.min_section_duration = min_section_duration
+        self.max_section_duration = max_section_duration
+        self.prefer_similar = prefer_similar
+        self.seed = seed
+        self.format = format
+        self.fade_duration = fade_duration
+ 
+        print(
+            f"DEBUG: JukeboxHandler initialized with min_section_duration={self.min_section_duration}s, "
+            f"max_section_duration={self.max_section_duration}s"
+        )
+ 
+        # Initialize jukebox
+        self.jukebox = InfiniteJukebox(
+            similarity_threshold=similarity_threshold,
+            max_connections_per_section=max_connections,
+            min_section_duration=min_section_duration,
+            max_section_duration=max_section_duration,
+        )
+        
+        # Load audio
+        self.mlaudio = MLAudio(filepath=path)
+        
+        # Analyze song
+        logging.info(f"Analyzing \"{path}\" for similar sections...")
+        print("DEBUG: About to call jukebox.analyze_song()")
+        self.jukebox.analyze_song(self.mlaudio)
+        print("DEBUG: jukebox.analyze_song() completed")
+        
+        # Get connection statistics
+        print("DEBUG: About to call jukebox.get_connection_stats()")
+        self.stats = self.jukebox.get_connection_stats()
+        print("DEBUG: jukebox.get_connection_stats() completed")
+        
+    def run(self):
+        """Generate and export the remixed audio."""
+        # Check if we have enough sections
+        if not self.jukebox.nodes:
+            rich_console.print("[red]Error: No sections found in the song. This could be due to:[/]")
+            rich_console.print("  • Similarity threshold too high (try lowering --similarity-threshold)")
+            rich_console.print("  • Song too short or has no detectable beats")
+            rich_console.print("  • Section duration constraints too restrictive")
+            return
+        
+        # Check if we have any connections
+        total_connections = sum(len(node.connections) for node in self.jukebox.nodes)
+        if total_connections == 0:
+            rich_console.print(f"[yellow]Warning: No connections found between sections at similarity threshold {self.similarity_threshold:.2f}[/]")
+            rich_console.print("Consider lowering the --similarity-threshold parameter")
+            # Lower the threshold automatically for this run
+            self.jukebox.similarity_threshold = 0.5
+            logging.info("Automatically lowering similarity threshold to 0.5")
+            self.jukebox._find_section_connections(self.jukebox.chroma, self.jukebox.bpm)
+        
+        # Generate remix
+        logging.info(f"Generating remix with target duration: {self.target_duration:.1f}s")
+        remix_sections = self.jukebox.generate_remix(
+            mlaudio=self.mlaudio,
+            target_duration=self.target_duration,
+            jump_probability=self.jump_probability,
+            prefer_similar=self.prefer_similar,
+            seed=self.seed,
+        )
+        
+        # Export to audio file
+        filename = os.path.splitext(os.path.basename(self.path))[0]
+        output_path = os.path.join(self.output_dir, f"{filename}_remix.{self.format.lower()}")
+        
+        logging.info(f"Exporting remix to: {output_path}")
+        self.jukebox.export_remix_audio(
+            self.mlaudio,
+            remix_sections,
+            output_path,
+            fade_duration=self.fade_duration,
+        )
+        
+        # Display statistics
+        self._display_statistics(remix_sections, output_path)
+        
+    def _display_statistics(self, remix_sections: List, output_path: str):
+        """Display statistics about the remix."""
+        total_sections = len(remix_sections)
+        unique_sections = len(set(section.beat_index for section in remix_sections))
+        
+        # Calculate actual duration
+        actual_duration = sum(
+            (section.end_sample - section.start_sample) / self.mlaudio.rate 
+            for section in remix_sections
+        )
+        
+        rich_console.print(f"\n[green]Successfully created remix: {output_path}[/]")
+        rich_console.print(f"[cyan]Remix Statistics:[/]")
+        rich_console.print(f"  • Total sections used: {total_sections}")
+        rich_console.print(f"  • Unique sections: {unique_sections}")
+        rich_console.print(f"  • Target duration: {self.target_duration:.1f}s")
+        rich_console.print(f"  • Actual duration: {actual_duration:.1f}s")
+        rich_console.print(f"  • Similarity threshold: {self.similarity_threshold:.1%}")
+        rich_console.print(f"  • Jump probability: {self.jump_probability:.1%}")
+        
+        rich_console.print(f"\n[cyan]Song Analysis:[/]")
+        rich_console.print(f"  • Total sections found: {self.stats['total_sections']}")
+        rich_console.print(f"  • Total connections: {self.stats['total_connections']}")
+        rich_console.print(f"  • Avg connections per section: {self.stats['avg_connections_per_section']:.1f}")
+        rich_console.print(f"  • Avg similarity score: {self.stats['avg_similarity_score']:.1%}")
+        rich_console.print(f"  • Max similarity score: {self.stats['max_similarity_score']:.1%}")
+        
+    def get_connection_stats(self):
+        """Get statistics about the song's connections."""
+        return self.stats

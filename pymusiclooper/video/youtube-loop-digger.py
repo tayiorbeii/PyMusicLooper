@@ -3,7 +3,7 @@ import subprocess
 import os
 import json
 from typing import Optional
-from pymusiclooper.core.core import MusicLooper
+from pymusiclooper.core import MusicLooper
 
 def export_best_loops(filepath: str, min_length: float, max_length: float, num_loops: int, target_dir: Optional[str] = None):
     # Create a MusicLooper instance

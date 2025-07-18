@@ -1,13 +1,10 @@
 """Main entry point for PyMusicLooper."""
 
-import sys
-from pymusiclooper.core.core import MusicLooper
-from pymusiclooper.utils.handler import CLIHandler
+from .cli import cli_main
 
 def main():
     """Main entry point for the application."""
-    handler = CLIHandler()
-    handler.run()
+    cli_main()
 
 if __name__ == "__main__":
     main()
