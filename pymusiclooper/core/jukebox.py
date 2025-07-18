@@ -61,7 +61,8 @@ class InfiniteJukebox:
                  similarity_threshold: float = 0.7,
                  max_connections_per_section: int = 10,
                  min_section_duration: float = 2.0,
-                 max_section_duration: float = 8.0):
+                 max_section_duration: float = 8.0,
+                 num_section_clusters: int = 4):
         """
         Initialize the Infinite Jukebox remixer.
         
@@ -75,6 +76,8 @@ class InfiniteJukebox:
         self.max_connections_per_section = max_connections_per_section
         self.min_section_duration = min_section_duration
         self.max_section_duration = max_section_duration
+        self.num_section_clusters = num_section_clusters
+        self.section_labels: Optional[np.ndarray] = None  # cluster label per node
         self.nodes: List[SectionNode] = []
         self.connection_map: Dict[int, List[SectionConnection]] = {}
         
@@ -112,6 +115,9 @@ class InfiniteJukebox:
         
         # Find connections between similar sections
         self._find_section_connections(mlaudio, chroma, bpm)
+
+        # --- High-level clustering for compositional generation ---
+        self._cluster_sections()
         
         logging.info(f"Created {len(self.nodes)} sections with {sum(len(node.connections) for node in self.nodes)} total connections")
     
@@ -342,6 +348,175 @@ class InfiniteJukebox:
         power_b = np.mean(np.max(node_b.power_features, axis=0))
         
         return abs(power_a - power_b)
+
+    # ------------------------------------------------------------------
+    # Section clustering & composition generation
+    # ------------------------------------------------------------------
+
+    def _cluster_sections(self) -> None:
+        """Cluster sections into *num_section_clusters* groups based on average chroma.
+
+        A simple k-means implementation is used to avoid the heavyweight scikit-learn
+        dependency.  The resulting labels are stored in *self.section_labels* and
+        also attached to each *SectionNode* via a dynamic *cluster_label* attribute.
+        """
+
+        if not self.nodes:
+            self.section_labels = None
+            return
+
+        k = max(1, int(self.num_section_clusters))
+        if k == 1:
+            self.section_labels = np.zeros(len(self.nodes), dtype=int)
+            for node in self.nodes:
+                setattr(node, "cluster_label", 0)
+            return
+
+        # --- Prepare feature matrix: average chroma per section (12-D) ---
+        data = np.stack([np.mean(node.chroma_features, axis=1, dtype=np.float32) for node in self.nodes])
+
+        # --- Tiny k-means (Euclidean) ---
+        rng = np.random.default_rng(0)
+        centroids = data[rng.choice(len(data), size=k, replace=False)]  # (k, 12)
+
+        for _ in range(100):  # max iterations
+            # Assign step
+            dist = np.linalg.norm(data[:, None, :] - centroids[None, :, :], axis=2)  # (N, k)
+            labels = np.argmin(dist, axis=1)  # (N,)
+
+            # Update step
+            new_centroids = np.array([
+                data[labels == i].mean(axis=0) if np.any(labels == i) else centroids[i]
+                for i in range(k)
+            ])
+
+            if np.allclose(new_centroids, centroids):
+                break
+            centroids = new_centroids
+
+        self.section_labels = labels.astype(int)
+
+        # Attach label to each node for downstream use
+        for node, lbl in zip(self.nodes, self.section_labels):
+            setattr(node, "cluster_label", int(lbl))
+
+    # ---------------------------------------------------------------
+    # Public API: structured composition similar to hip-hop song form
+    # ---------------------------------------------------------------
+
+    def generate_composition(
+        self,
+        mlaudio: MLAudio,
+        section_order: List[int],
+        loops_per_section: int = 4,
+        prefer_similar: bool = True,
+        seed: Optional[int] = None,
+    ) -> List[SectionNode]:
+        """Generate a structured composition following *section_order*.
+
+        Parameters
+        ----------
+        mlaudio
+            The MLAudio instance for timing information.
+        section_order
+            List of cluster indices representing the desired macro-structure
+            (e.g., ``[0, 1, 2, 1, 2]`` for intro-verse-chorus-verse-chorus).
+            Valid indices are ``0 … num_section_clusters-1``.
+        loops_per_section
+            How many loops (SectionNode instances) to pick for each macro section.
+        prefer_similar
+            Whether to bias transitions within a macro section towards more
+            similar neighbours (uses connection graph weights).
+        seed
+            Optional RNG seed for reproducibility.
+        """
+
+        if seed is not None:
+            random.seed(seed)
+
+        if not self.nodes or self.section_labels is None:
+            raise ValueError("No analysis/clustering available. Call analyze_song() first.")
+
+        # Build mapping from cluster label to nodes list
+        clusters: Dict[int, List[SectionNode]] = {}
+        for node, lbl in zip(self.nodes, self.section_labels):
+            clusters.setdefault(int(lbl), []).append(node)
+
+        composition: List[SectionNode] = []
+
+        for lbl in section_order:
+            if lbl not in clusters or not clusters[lbl]:
+                continue  # skip unknown label
+
+            # Start with a random node from this cluster
+            current = random.choice(clusters[lbl])
+
+            for _ in range(loops_per_section):
+                composition.append(current)
+
+                # Transition within same cluster
+                same_cluster_conns = [c for c in current.connections if getattr(c.target_node, "cluster_label", -1) == lbl]
+
+                if prefer_similar and same_cluster_conns:
+                    # Weighted by similarity
+                    weights = [c.similarity_score for c in same_cluster_conns]
+                    total_w = sum(weights)
+                    if total_w > 0:
+                        weights = [w / total_w for w in weights]
+                        current = random.choices([c.target_node for c in same_cluster_conns], weights=weights)[0]
+                        continue
+
+                # Fallback: random node in cluster
+                current = random.choice(clusters[lbl])
+
+        return composition
+
+    # ---------------------------------------------------------------
+    # Convenience helpers
+    # ---------------------------------------------------------------
+
+    def suggest_section_order(self) -> List[int]:
+        """Return a basic intro→verse→chorus style order based on cluster sizes.
+
+        Clusters are sorted by average loudness (softest assumed intro, loudest chorus).
+        The resulting order is `[intro, verse, chorus, verse, chorus]` if we have
+        at least 3 clusters, otherwise it falls back to sequential labels.
+        """
+        if self.section_labels is None:
+            raise ValueError("Requires analyze_song() to be called.")
+
+        # Compute loudness per cluster
+        cluster_loudness: Dict[int, float] = {}
+        for lbl in np.unique(self.section_labels):
+            secs = [n for n in self.nodes if getattr(n, "cluster_label", -1) == lbl]
+            loud = np.mean([
+                np.mean(np.max(n.power_features, axis=0)) for n in secs
+            ]) if secs else 0.0
+            cluster_loudness[lbl] = loud
+
+        # Sort clusters: soft→loud
+        sorted_lbl = sorted(cluster_loudness, key=lambda l: cluster_loudness[l])
+
+        if len(sorted_lbl) >= 3:
+            intro, verse, chorus = sorted_lbl[:3]
+            return [intro, verse, chorus, verse, chorus]
+        else:
+            return sorted_lbl
+
+    def export_composition_audio(
+        self,
+        mlaudio: MLAudio,
+        composition_sections: List[SectionNode],
+        output_path: str,
+        fade_duration: float = 0.1,
+    ) -> None:
+        """Wrapper around *export_remix_audio* for clarity."""
+        self.export_remix_audio(
+            mlaudio,
+            composition_sections,
+            output_path,
+            fade_duration=fade_duration,
+        )
     
     def generate_remix(self, 
                       mlaudio: MLAudio,
