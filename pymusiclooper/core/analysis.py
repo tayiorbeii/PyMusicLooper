@@ -10,6 +10,29 @@ from numba import njit
 from .audio import MLAudio
 from .exceptions import LoopNotFoundError
 
+# Magic constants for beat detection
+ACCEPTABLE_NOTE_DEVIATION = (
+    0.0875  # Threshold for musically related beats/notes (from trial and error)
+)
+ACCEPTABLE_LOUDNESS_DIFFERENCE = (
+    0.5  # Max acceptable loudness difference between loop points
+)
+
+# Constants for zero-crossing detection (Audacity-based algorithm)
+ZERO_CROSSING_WINDOW_FRACTION = 100  # Window size is 1/Nth of sample rate
+ZERO_CROSSING_SAME_SIGN_PENALTY = 0.4  # Penalty when samples have same sign
+ZERO_CROSSING_DOWNWARD_PENALTY = 0.1  # Penalty for downward crossing
+ZERO_CROSSING_POSITION_PENALTY = 0.1  # Distance-based position penalty weight
+ZERO_CROSSING_SINGLE_CHANNEL_THRESHOLD = (
+    0.2  # Max acceptable distance for single channel
+)
+ZERO_CROSSING_MULTI_CHANNEL_THRESHOLD = (
+    0.6  # Max acceptable distance for multi-channel audio
+)
+
+# Pruning constants
+PRUNING_EPSILON = 1e-3  # Minimum value to avoid division by zero on silent tracks
+
 
 @dataclass
 class LoopPair:
@@ -128,12 +151,22 @@ def find_best_loop_points(
         bpm = 120.0
         beats = np.arange(start=0, stop=chroma.shape[-1], step=1, dtype=int)
         logging.info(f"Overriding number of frames to check with: {beats.size}")
-        logging.info(f"Estimated iterations required using brute force: {int(beats.size*beats.size*(1-(min_loop_duration/chroma.shape[-1])))}")
-        logging.info("**NOTICE** The program may appear frozen, but processing will continue in the background. This operation may take several minutes to complete.")
-    else: # normal mode of operation
+        logging.info(
+            f"Estimated iterations required using brute force: {int(beats.size * beats.size * (1 - (min_loop_duration / chroma.shape[-1])))}"
+        )
+        logging.info(
+            "**NOTICE** The program may appear frozen, but processing will continue in the background. This operation may take several minutes to complete."
+        )
+    else:  # normal mode of operation
         chroma, power_db, bpm, beats = _analyze_audio(mlaudio)
         # Handle bpm as either scalar or array
-        bpm_value = bpm if np.isscalar(bpm) else bpm.item() if hasattr(bpm, 'item') else float(bpm)
+        bpm_value = (
+            bpm
+            if np.isscalar(bpm)
+            else bpm.item()
+            if hasattr(bpm, "item")
+            else float(bpm)
+        )
         logging.info(f"Detected {beats.size} beats at {bpm_value:.0f} bpm")
 
     logging.info(
@@ -167,7 +200,7 @@ def find_best_loop_points(
 
     if not candidate_pairs:
         raise LoopNotFoundError(
-            f"No loop points found for \"{mlaudio.filename}\" with current parameters."
+            f'No loop points found for "{mlaudio.filename}" with current parameters.'
         )
 
     # Calculate scores for all pairs first
@@ -197,9 +230,7 @@ def find_best_loop_points(
         pair.score = score
 
     # Sort all pairs by score before any pruning
-    candidate_pairs = sorted(
-        candidate_pairs, reverse=True, key=lambda x: x.score
-    )
+    candidate_pairs = sorted(candidate_pairs, reverse=True, key=lambda x: x.score)
 
     # Only prune if requested
     if not disable_pruning:
@@ -219,12 +250,12 @@ def find_best_loop_points(
         pair.loop_start = nearest_zero_crossing(
             mlaudio.playback_audio,
             mlaudio.rate,
-            mlaudio.frames_to_samples(pair._loop_start_frame_idx)
+            mlaudio.frames_to_samples(pair._loop_start_frame_idx),
         )
         pair.loop_end = nearest_zero_crossing(
             mlaudio.playback_audio,
             mlaudio.rate,
-            mlaudio.frames_to_samples(pair._loop_end_frame_idx)
+            mlaudio.frames_to_samples(pair._loop_end_frame_idx),
         )
 
     if not candidate_pairs:
@@ -232,12 +263,8 @@ def find_best_loop_points(
             f"No loop points found for {mlaudio.filename} with current parameters."
         )
 
-    logging.info(
-        f"Filtered to {len(candidate_pairs)} best candidate loop points"
-    )
-    logging.info(
-        f"Total analysis runtime: {time.perf_counter() - runtime_start:.3f}s"
-    )
+    logging.info(f"Filtered to {len(candidate_pairs)} best candidate loop points")
+    logging.info(f"Total analysis runtime: {time.perf_counter() - runtime_start:.3f}s")
 
     return candidate_pairs
 
@@ -278,7 +305,9 @@ def _analyze_audio(
         beats = np.union1d(beats, beats_plp)
         beats = np.sort(beats)
     except Exception as e:
-        raise LoopNotFoundError(f"Beat analysis failed for \"{mlaudio.filename}\". Cannot continue.") from e
+        raise LoopNotFoundError(
+            f'Beat analysis failed for "{mlaudio.filename}". Cannot continue.'
+        ) from e
 
     return chroma, power_db, bpm, beats
 
@@ -316,16 +345,6 @@ def _find_candidate_pairs(
     """
     candidate_pairs = []
 
-    # Magic constants
-    ## Mainly found through trial and error,
-    ## higher values typically result in the inclusion of musically unrelated beats/notes
-    ACCEPTABLE_NOTE_DEVIATION = 0.0875
-    ## Since the _db_diff comparison is takes a perceptually weighted power_db frame,
-    ## the difference should be imperceptible (ideally, close to 0)
-    ## Based on trial and error, values higher than ~0.5 have a perceptible
-    ## difference in loudness
-    ACCEPTABLE_LOUDNESS_DIFFERENCE = 0.5
-
     deviation = _norm(chroma[..., beats] * ACCEPTABLE_NOTE_DEVIATION)
 
     # Iterate through all possible combinations
@@ -335,7 +354,7 @@ def _find_candidate_pairs(
             # Skip invalid durations but continue searching
             if loop_length < min_loop_duration or loop_length > max_loop_duration:
                 continue
-                
+
             note_distance = _norm(chroma[..., loop_end] - chroma[..., loop_start])
 
             if note_distance <= deviation[idx]:
@@ -420,17 +439,13 @@ def _prune_candidates(
     db_diff_array = np.array([pair.loudness_difference for pair in candidate_pairs])
     note_dist_array = np.array([pair.note_distance for pair in candidate_pairs])
 
-    # Minimum value used to avoid issues with tracks with lots of silence
-    epsilon = 1e-3
-    min_adjusted_db_diff_array = db_diff_array[db_diff_array > epsilon]
-    min_adjusted_note_dist_array = note_dist_array[note_dist_array > epsilon]
+    min_adjusted_db_diff_array = db_diff_array[db_diff_array > PRUNING_EPSILON]
+    min_adjusted_note_dist_array = note_dist_array[note_dist_array > PRUNING_EPSILON]
 
     # Avoid index errors by having at least 3 elements when performing percentile-based pruning
     # Otherwise, skip by setting the value to the highest available
     if min_adjusted_db_diff_array.size > 3:
-        db_threshold = np.percentile(
-            min_adjusted_db_diff_array, keep_top_loudness
-        )
+        db_threshold = np.percentile(min_adjusted_db_diff_array, keep_top_loudness)
     else:
         db_threshold = np.max(db_diff_array)
 
@@ -443,7 +458,8 @@ def _prune_candidates(
 
     # Lower values are better
     indices_that_meet_cond = np.flatnonzero(
-        (db_diff_array <= max(acceptable_loudness, db_threshold)) & (note_dist_array <= note_dist_threshold)
+        (db_diff_array <= max(acceptable_loudness, db_threshold))
+        & (note_dist_array <= note_dist_threshold)
     )
     return [candidate_pairs[idx] for idx in indices_that_meet_cond]
 
@@ -597,8 +613,8 @@ def nearest_zero_crossing(audio: np.ndarray, rate: int, sample_idx: int) -> int:
     # Original credit goes to the Audacity team and contributors
     n_channels = audio.shape[1]
 
-    # Window is 1/100th of a second
-    window_size = int(max(1, rate / 100))
+    # Window is 1/ZERO_CROSSING_WINDOW_FRACTION of a second
+    window_size = int(max(1, rate / ZERO_CROSSING_WINDOW_FRACTION))
 
     # Create sample window centered around sample_idx
     offset = window_size // 2
@@ -618,24 +634,31 @@ def nearest_zero_crossing(audio: np.ndarray, rate: int, sample_idx: int) -> int:
         for i in range(sample_window_length):
             fdist = np.abs(one_dist[i])
             if prev * one_dist[i] > 0:  # both same sign? No good.
-                fdist += 0.4  # No good if same sign.
+                fdist += ZERO_CROSSING_SAME_SIGN_PENALTY
             elif prev > 0.0:
-                fdist += 0.1  # medium penalty for downward crossing.
+                fdist += ZERO_CROSSING_DOWNWARD_PENALTY
             prev = one_dist[i]
             one_dist[i] = fdist
 
         for i in range(sample_window_length):
             dist[i] += one_dist[i]
-            dist[i] += 0.1 * abs(i - offset + offset_correction) / (window_size / 2)
+            dist[i] += (
+                ZERO_CROSSING_POSITION_PENALTY
+                * abs(i - offset + offset_correction)
+                / (window_size / 2)
+            )
 
     argmin = np.argmin(dist)
     minimum_dist = dist[argmin]
 
-    # If we're worse than 0.2 on average, on one track, then no good.
-    if (n_channels == 1) and (minimum_dist > (0.2 * n_channels)):
+    # If we're worse than threshold on average, then no good crossing found
+    if (n_channels == 1) and (
+        minimum_dist > (ZERO_CROSSING_SINGLE_CHANNEL_THRESHOLD * n_channels)
+    ):
         return sample_idx
-    # If we're worse than 0.6 on average, on multi-track, then no good.
-    if (n_channels > 1) and (minimum_dist > (0.6 * n_channels)):
+    if (n_channels > 1) and (
+        minimum_dist > (ZERO_CROSSING_MULTI_CHANNEL_THRESHOLD * n_channels)
+    ):
         return sample_idx
 
     return int(sample_idx + argmin - offset + offset_correction)
