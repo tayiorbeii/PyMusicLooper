@@ -42,9 +42,8 @@ pymusiclooper/           # Main package
 
 extended_looper.py      # Standalone extended looper script
 
-assets/                # Static assets
-├── img/              # Image assets
-└── media/            # Media files
+- [Python (64-bit)](https://www.python.org/downloads/) >=3.10
+- [ffmpeg](https://ffmpeg.org/download.html): required for loading audio from youtube (or any stream supported by [yt-dlp](https://github.com/yt-dlp/yt-dlp)) and adds support for loading additional audio formats and codecs such as M4A/AAC, Apple Lossless (ALAC), WMA, ATRAC (.at9), etc. A full list can be found at [ffmpeg's documentation](https://www.ffmpeg.org/general.html#Audio-Codecs). If the aforementioned features are not required, can be skipped.
 
 output/               # Generated content
 ├── LooperOutput/     # Generated loops
@@ -53,30 +52,71 @@ output/               # Generated content
 └── downloads/        # Downloaded content
 ```
 
+Additionally, to use the `play` command on Linux systems, you may need to
+install the PortAudio library. On Ubuntu, run `sudo apt install libportaudio2`.
+
 ## Installation
 
-### From PyPI
-```bash
+### Option 1: Installing using uv [Recommended]
+
+This method of installation is strongly recommended, as it isolates PyMusicLooper's dependencies from the rest of your environment,
+and as a result, avoids dependency conflicts and breakage due to other packages.
+
+Required tool: [`uv`](https://github.com/astral-sh/uv).
+
+Note: python is not required, as `uv` automatically installs this package's required python version automatically if not present.
+
+```sh
+# Normal install
+# (follows the official releases on https://pypi.org/project/pymusiclooper/)
+uv tool install pymusiclooper
+
+# Alternative install
+# (follows the git repository; equivalent to a nightly release channel)
+uv tool install git+https://github.com/arkrow/PyMusicLooper.git
+
+# Updating to new releases in either case can be done simply using:
+uv tool upgrade pymusiclooper
+```
+
+Installation note: you may need to specify a Python version if the latest Python release is not supported and fails to install, e.g.
+
+```sh
+uv tool install pymusiclooper --python "3.12"
+```
+
+### Option 2: Installing using pipx
+
+Like `uv`, isolates PyMusicLooper's dependencies from the rest of your environment,
+and as a result, avoids dependency conflicts and breakage due to other packages.
+However, unlike `uv`, requires python to already be installed along with `pipx`.
+
+Required python packages: [`pipx`](https://pypa.github.io/pipx/) (can be installed using `pip install pipx` ).
+
+```sh
+# Normal install
+# (follows the official releases on https://pypi.org/project/pymusiclooper/)
+pipx install pymusiclooper
+
+# Alternative install
+# (follows the git repository; equivalent to a nightly release channel)
+pipx install git+https://github.com/arkrow/PyMusicLooper.git
+
+# Updating to new releases in either case can be done simply using:
+pipx upgrade pymusiclooper
+```
+
+### Option 3: Installing using pip
+
+Traditional package installation method.
+
+*Note: fragile compared to an installation using `uv` or `pipx`. PyMusicLooper may suddenly stop working if its dependencies were overwritten by another package (e.g. [issue #12](https://github.com/arkrow/PyMusicLooper/issues/12)).*
+
+```sh
 pip install pymusiclooper
 ```
 
-### From Source
-```bash
-git clone https://github.com/arkrow/PyMusicLooper.git
-cd PyMusicLooper
-pip install -e .
-```
-
-### Development Installation
-```bash
-git clone https://github.com/arkrow/PyMusicLooper.git
-cd PyMusicLooper
-poetry install
-```
-
-## Usage
-
-### CLI Usage
+## Available Commands
 
 PyMusicLooper provides a command-line interface for easy use:
 
@@ -204,142 +244,8 @@ batch_handler = BatchHandler(
 batch_handler.run()
 ```
 
-## Configuration
+Available at [CHANGELOG.md](CHANGELOG.md)
 
-PyMusicLooper supports various configuration options through environment variables:
+## Star History
 
-- `PML_INTERACTIVE_MODE`: Enable interactive mode for loop selection
-- `PML_DISPLAY_SAMPLES`: Display loop points in samples instead of time format
-
-### Configuration Files
-
-The project includes predefined configuration files in `pymusiclooper/config/`:
-- `videos.json`: YouTube video URLs for processing
-- `groove.json`, `groove2.json`: Groove music configurations
-- `jazz.json`: Jazz music configurations  
-- `cosmic.json`: Cosmic music configurations
-- `polygon.json`: Polygon music configurations
-
-## CLI Options
-
-Common command-line options:
-- `--output-dir`: Specify output directory
-- `--batch`: Process multiple files in a directory
-- `--recursive`: Process subdirectories recursively
-- `--min-loop-duration`: Minimum loop duration (seconds)
-- `--max-loop-duration`: Maximum loop duration (seconds)
-- `--extended-length`: Create extended version with target length
-- `--fade-length`: Fade duration for extended versions
-- `--split-audio`: Split into intro/loop/outro sections
-- `--to-txt`: Export loop points to text file
-- `--to-stdout`: Print loop points to stdout
-- `--tag-names`: Export custom tags to audio file
-- `--brute-force`: Enable brute force loop search
-- `--disable-pruning`: Disable loop pruning algorithm
-- `--format`: Output audio format (WAV, MP3, etc.)
-
-## Requirements
-
-- Python 3.8+
-- ffmpeg
-- sox  
-- yt-dlp
-
-## Dependencies
-
-See pyproject.toml for the complete list of Python dependencies.
-
-## Examples
-
-### Extended Looper Script
-The repository includes an `extended_looper.py` script that creates very long versions of songs by finding all good non-overlapping loop points and repeating them sequentially throughout the song.
-
-#### How it works:
-1. Finds all potential loop points in the song
-2. Filters loops by minimum confidence level (default 90%)
-3. Selects the best non-overlapping loops (no temporal overlap)
-4. Plays the original song until the first loop point
-5. Repeats the first loop section N times (default 3) with crossfade transitions
-6. Continues with original audio until the next loop point
-7. Repeats the process for all selected loops
-8. Adds any remaining audio after the last loop with smooth crossfades
-
-#### CLI Usage:
-```bash
-# Basic usage - finds non-overlapping loops and repeats them 3 times each
-python extended_looper.py path/to/song.mp3
-
-# Custom parameters
-python extended_looper.py path/to/song.mp3 \
-    --min-length 15 \           # Minimum loop duration in seconds
-    --max-length 45 \           # Maximum loop duration in seconds  
-    --num-repeats 4 \           # Times to repeat each loop section
-    --fade-duration 0.05 \      # Crossfade duration between segments (seconds)
-    --min-confidence 0.8        # Minimum confidence level for loops (0.0-1.0)
-
-# Process multiple files
-python extended_looper.py song1.mp3 song2.mp3 song3.mp3
-
-# High-quality loops only with short crossfades
-python extended_looper.py path/to/song.mp3 \
-    --min-confidence 0.95 \     # Very high confidence threshold
-    --fade-duration 0.02        # Very short crossfade
-
-# Find multiple short loops instead of few long ones
-python extended_looper.py path/to/song.mp3 \
-    --min-length 3 \            # Allow 3-second loops
-    --max-length 15 \           # Maximum 15-second loops
-    --min-confidence 0.7        # Slightly lower confidence for more options
-```
-
-#### Python API Usage:
-```python
-from extended_looper import create_extended_version
-
-# Create an extended version with non-overlapping sequential loops
-create_extended_version(
-    filepath="path/to/song.mp3",
-    min_length=10.0,           # Minimum loop duration
-    max_length=60.0,           # Maximum loop duration 
-    num_repeats=3,             # Times to repeat each loop section
-    min_gap=5.0,               # Minimum gap between loops (seconds)
-    fade_duration=0.1,         # Crossfade duration between segments (seconds)
-    min_confidence=0.9         # Minimum confidence level for loops (0.0-1.0)
-)
-```
-
-#### Extended Looper Options:
-- `--min-length`: Minimum loop duration in seconds (default: 10.0)
-- `--max-length`: Maximum loop duration in seconds (default: 60.0)
-- `--num-repeats`: Number of times to repeat each loop section (default: 3)
-- `--min-gap`: Minimum gap between loops in seconds (default: 5.0)
-- `--fade-duration`: Crossfade duration between segments in seconds (default: 0.1)
-- `--min-confidence`: Minimum confidence level for loops 0.0-1.0 (default: 0.9)
-
-#### Output:
-The script provides detailed progress information including:
-- Number of potential loop points found
-- Number of loops filtered by confidence threshold
-- Number of non-overlapping loops selected
-- Details for each loop (position with MM:SS timestamps, duration, score)
-- Crossfade duration applied
-- Original vs extended duration and extension ratio
-- Output file location in `output/` directory
-
-#### Generated Files:
-- `{filename}_extended.mp3`: The extended audio file with repeated loops
-- `{filename}_loop_report.txt`: Detailed report with human-readable timestamps (MM:SS format)
-  - Summary statistics
-  - Loop details with original and extended positions
-  - Navigation guide for the extended version
-
-### Output Structure
-PyMusicLooper creates organized output directories:
-- `output/LooperOutput/`: Basic loop exports
-- `output/glitch-gifs/`: Generated glitch art animations
-- `output/finished/`: Final processed videos
-- `output/downloads/`: Downloaded YouTube content
-
-## License
-
-MIT License
+[![Star History Chart](https://api.star-history.com/svg?repos=arkrow/PyMusicLooper&type=Date)](https://www.star-history.com/#arkrow/PyMusicLooper&Date)

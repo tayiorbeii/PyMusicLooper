@@ -4,18 +4,17 @@ used for programmatic access to the CLI's main features."""
 import os
 import shutil
 from math import ceil
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import lazy_loader as lazy
 import numpy as np
 
-from .analysis import LoopPair, find_best_loop_points
-from .audio import MLAudio
-from .playback import PlaybackHandler
+from pymusiclooper.analysis import LoopPair, find_best_loop_points
+from pymusiclooper.audio import MLAudio
+from pymusiclooper.playback import PlaybackHandler
 
 # Lazy-load external libraries when they're needed
 soundfile = lazy.load("soundfile")
-# taglib = lazy.load("taglib")
 
 class MusicLooper:
     """High-level API access to PyMusicLooper's main functions."""
@@ -332,12 +331,28 @@ class MusicLooper:
             sf.buffer_write(final_loop.tobytes(order="C"), dtype)
             if disable_fade_out:
                 sf.buffer_write(outro.tobytes(order="C"), dtype)
+
+        # attempt to copy over the tags
+        try:
+            import taglib
+            original_tags = None
+            with taglib.File(self.filepath, save_on_exit=False) as src_file:
+                original_tags = src_file.tags
+
+            with taglib.File(output_file_path, save_on_exit=True) as dest_file:
+                for tag in original_tags:
+                    dest_file.tags[tag] = original_tags[tag]
+        except Exception:
+            # silently ignore errors for now;
+            # TODO: implement logging for debugging
+            pass
+
         return output_file_path
 
     def export_txt(
         self,
-        loop_start: int,
-        loop_end: int,
+        loop_start: Union[int, float, str],
+        loop_end: Union[str, int, float, str],
         txt_name: str = "loops",
         output_dir: Optional[str] = None
     ):
@@ -345,8 +360,8 @@ class MusicLooper:
         `{loop_start} {loop_end} {filename}`
 
         Args:
-            loop_start (int): Loop start in samples.
-            loop_end (int): Loop end in samples.
+            loop_start (Union[int, float, str]): Loop start in samples, seconds or ftime.
+            loop_end (Union[int, float, str]): Loop end in samples, seconds or ftime.
             txt_name (str, optional): Filename of the text file to export to. Defaults to "loops".
             output_dir (str, optional): Path to the output directory. Defaults to the same directory as the source audio file.
         """
@@ -358,25 +373,94 @@ class MusicLooper:
         with open(out_path, "a") as file:
             file.write(f"{loop_start} {loop_end} {self.mlaudio.filename}\n")
 
-    # def export_tags(
-    #     self,
-    #     loop_start: int,
-    #     loop_end: int,
-    #     loop_start_tag: str,
-    #     loop_end_tag: str,
-    #     output_dir: Optional[str] = None
-    # ):
-    #     """Adds metadata tags of loop points to a copy of the source audio file.
 
-    #     Args:
-    #         loop_start (int): Loop start in samples.
-    #         loop_end (int): Loop end in samples.
-    #         loop_start_tag (str): Name of the loop_start metadata tag.
-    #         loop_end_tag (str): Name of the loop_end metadata tag.
-    #         output_dir (str, optional): Path to the output directory. Defaults to the same diretcory as the source audio file.
-    #     """
-    #     if output_dir is None:
-    #         output_dir = os.path.abspath(self.mlaudio.filepath)
+    def _find_start_tag(
+        self,
+        file_tags: dict[str, List[str]],
+    ) -> str:
+        # List derived from:
+        # https://github.com/libsdl-org/SDL_mixer/blob/5175907b515ea9e07d0b35849bfaf09870d07d33/src/codecs/music_ogg.c#L289-L302
+        # https://github.com/vgmstream/vgmstream/blob/02d3c3f875fb97b682c4479fe66c7e0a0eeee04d/src/meta/ogg_vorbis.c#L647-L675
+        known_tags = [
+            'COMMENT=LOOPPOINT',
+            'LOOP',
+            'LOOP_BEGIN',
+            'LOOPPOINT',
+            'LOOPS',
+            'LOOPSTART',
+            'LOOP_START',
+            'LOOP-START',
+            'UM3.STREAM.LOOPPOINT.START',
+            'XIPH_CUE_LOOPSTART',
+        ]
+
+        for tag in known_tags:
+            if tag in file_tags:
+                return tag
+
+        raise ValueError(f"No loop start tag could be automatically detected in the metadata of \"{self.filename}\".")
+
+
+    def _find_end_tag(
+        self,
+        file_tags: dict[str, List[str]],
+    ) -> str:
+        known_tags = [
+            'LOOPE',
+            'LOOPEND',
+            'LOOP_END',
+            'LOOP-END',
+            'LOOPLENGTH',
+            'LOOP_LENGTH',
+            'LOOP-LENGTH',
+            'XIPH_CUE_LOOPEND',
+        ]
+
+        for tag in known_tags:
+            if tag in file_tags:
+                return tag
+
+        raise ValueError(f"No loop end tag could be automatically detected in the metadata of \"{self.filename}\".")
+
+
+    def _end_tag_is_offset(
+        self,
+        loop_end_tag: str,
+        is_offset: Optional[bool],
+    ) -> bool:
+        if is_offset is not None:
+            return is_offset
+
+        upper_loop_end_tag = loop_end_tag.upper()
+
+        return "LEN" in upper_loop_end_tag or "OFFSET" in upper_loop_end_tag
+
+
+    def export_tags(
+        self,
+        loop_start: int,
+        loop_end: int,
+        loop_start_tag: str,
+        loop_end_tag: str,
+        is_offset: Optional[bool] = None,
+        output_dir: Optional[str] = None
+    ) -> Tuple[str]:
+        """Adds metadata tags of loop points to a copy of the source audio file.
+
+        Args:
+            loop_start (int): Loop start in samples.
+            loop_end (int): Loop end in samples.
+            loop_start_tag (str): Name of the loop_start metadata tag.
+            loop_end_tag (str): Name of the loop_end metadata tag.
+            is_offset (bool, optional): Export second tag as relative length / absolute end. Defaults to auto-detecting based on tag name.
+            output_dir (str, optional): Path to the output directory. Defaults to the same diretcory as the source audio file.
+        """
+        # Workaround for taglib import issues on Apple silicon devices
+        # Import taglib only when needed to isolate ImportErrors
+        import taglib
+            
+        if output_dir is None:
+            output_dir = os.path.abspath(self.mlaudio.filepath)
 
     #     track_name, file_extension = os.path.splitext(self.mlaudio.filename)
 
@@ -385,39 +469,58 @@ class MusicLooper:
     #     )
     #     shutil.copyfile(self.mlaudio.filepath, exported_file_path)
 
-    #     with taglib.File(exported_file_path, save_on_exit=True) as audio_file:
-    #         audio_file.tags[loop_start_tag] = [str(loop_start)]
-    #         audio_file.tags[loop_end_tag] = [str(loop_end)]
+        # Handle LOOPLENGTH tag
+        if self._end_tag_is_offset(loop_end_tag, is_offset):
+            loop_end = loop_end - loop_start
+
+        with taglib.File(exported_file_path, save_on_exit=True) as audio_file:
+            audio_file.tags[loop_start_tag] = [str(loop_start)]
+            audio_file.tags[loop_end_tag] = [str(loop_end)]
+
+        return str(loop_start), str(loop_end)
 
 
-    # def read_tags(self, loop_start_tag: str, loop_end_tag: str) -> Tuple[int, int]:
-    #     """Reads the tags provided from the file and returns the read loop points
+    def read_tags(self, loop_start_tag: str, loop_end_tag: str, is_offset: Optional[bool] = None) -> Tuple[int, int]:
+        """Reads the tags provided from the file and returns the read loop points
 
-    #     Args:
-    #         loop_start_tag (str): The name of the metadata tag containing the loop_start value
-    #         loop_end_tag (str): The name of the metadata tag containing the loop_end value
+        Args:
+            loop_start_tag (str): The name of the metadata tag containing the loop_start value
+            loop_end_tag (str): The name of the metadata tag containing the loop_end value
+            is_offset (bool, optional): Parse second tag as relative length / absolute end. Defaults to auto-detecting based on tag name.
 
-    #     Returns:
-    #         Tuple[int, int]: A tuple containing (loop_start, loop_end)
-    #     """
-    #     loop_start = None
-    #     loop_end = None
+        Returns:
+            Tuple[int, int]: A tuple containing (loop_start, loop_end)
+        """
+        # Workaround for taglib import issues on Apple silicon devices
+        # Import taglib only when needed to isolate ImportErrors
+        import taglib
 
-    #     with taglib.File(self.filepath) as audio_file:
-    #         if loop_start_tag not in audio_file.tags:
-    #             raise ValueError(f"The tag \"{loop_start_tag}\" is not present in the metadata of \"{self.filename}\".")
-    #         if loop_end_tag not in audio_file.tags:
-    #             raise ValueError(f"The tag \"{loop_end_tag}\" is not present in the metadata of \"{self.filename}\".")
-    #         try:
-    #             loop_start = int(audio_file.tags[loop_start_tag][0])
-    #             loop_end = int(audio_file.tags[loop_end_tag][0])
-    #         except Exception as e:
-    #             raise TypeError(
-    #                 "One of the tags provided has invalid (non-integer or empty) values"
-    #             ) from e
+        loop_start = None
+        loop_end = None
+
+        with taglib.File(self.filepath) as audio_file:
+            if loop_start_tag is None:
+                loop_start_tag = self._find_start_tag(audio_file.tags)
+            if loop_end_tag is None:
+                loop_end_tag = self._find_end_tag(audio_file.tags)
+            if loop_start_tag not in audio_file.tags:
+                raise ValueError(f"The tag \"{loop_start_tag}\" is not present in the metadata of \"{self.filename}\".")
+            if loop_end_tag not in audio_file.tags:
+                raise ValueError(f"The tag \"{loop_end_tag}\" is not present in the metadata of \"{self.filename}\".")
+            try:
+                loop_start = int(audio_file.tags[loop_start_tag][0])
+                loop_end = int(audio_file.tags[loop_end_tag][0])
+            except Exception as e:
+                raise TypeError(
+                    "One of the tags provided has invalid (non-integer or empty) values"
+                ) from e
 
     #     # Re-order the loop points in case
     #     real_loop_start = min(loop_start, loop_end)
     #     real_loop_end = max(loop_start, loop_end)
 
-    #     return real_loop_start, real_loop_end
+        # Handle LOOPLENGTH tag
+        if self._end_tag_is_offset(loop_end_tag, is_offset):
+            real_loop_end = real_loop_start + real_loop_end
+
+        return real_loop_start, real_loop_end

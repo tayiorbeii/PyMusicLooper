@@ -8,18 +8,19 @@ import rich_click as click
 from rich.logging import RichHandler
 from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn
 from rich.traceback import install as rich_traceback_handler
-from rich_click.cli import patch as rich_click_patch
+from rich_click.patch import patch as rich_click_patch
 from yt_dlp.utils import YoutubeDLError
 
 rich_click_patch()
 from click_option_group import RequiredMutuallyExclusiveOptionGroup, optgroup
-from click_params import PUBLIC_URL as UrlParamType
+from click_params import URL as UrlParamType
 
-from . import __version__
-from .utils.console import _COMMAND_GROUPS, _OPTION_GROUPS, rich_console
-from .core import MusicLooper, AudioLoadError, LoopNotFoundError
-from .utils.handler import BatchHandler, LoopExportHandler, LoopHandler, JukeboxHandler
-from .utils import download_audio, mk_outputdir
+from pymusiclooper import __version__
+from pymusiclooper.console import _COMMAND_GROUPS, _OPTION_GROUPS, rich_console
+from pymusiclooper.core import MusicLooper
+from pymusiclooper.exceptions import AudioLoadError, LoopNotFoundError
+from pymusiclooper.handler import BatchHandler, LoopExportHandler, LoopHandler
+from pymusiclooper.utils import download_audio, get_outputdir, mk_outputdir
 
 # CLI --help styling
 click.rich_click.OPTION_GROUPS = _OPTION_GROUPS
@@ -142,12 +143,16 @@ def play(**kwargs):
 
 @cli_main.command()
 @click.option('--path', type=click.Path(exists=True), required=True, help='Path to the audio file.')
-@click.option("--tag-names", type=str, required=True, nargs=2, help="Name of the loop metadata tags to read from, e.g. --tags-names LOOP_START LOOP_END  (note: values must be integers and in sample units).")
-def play_tagged(path, tag_names):
+@click.option("--tag-names", type=str, required=False, nargs=2, help="Name of the loop metadata tags to read from, e.g. --tag-names LOOP_START LOOP_END  (note: values must be integers and in sample units). Default: auto-detected.")
+@click.option("--tag-offset/--no-tag-offset", is_flag=True, default=None, help="Always parse second loop metadata tag as a relative length / or as an absolute length. Default: auto-detected based on tag name.")
+def play_tagged(path, tag_names, tag_offset):
     """Skips loop analysis and reads the loop points directly from the tags present in the file."""
     try:
+        if tag_names is None:
+            tag_names = [None, None]
+
         looper = MusicLooper(path)
-        loop_start, loop_end = looper.read_tags(tag_names[0], tag_names[1])
+        loop_start, loop_end = looper.read_tags(tag_names[0], tag_names[1], tag_offset)
 
         in_samples = "PML_DISPLAY_SAMPLES" in os.environ
 
@@ -199,6 +204,7 @@ def extend(**kwargs):
 @common_loop_options
 @common_export_options
 @click.option("--export-to", type=click.Choice(("STDOUT", "TXT"), case_sensitive=False), default="STDOUT", show_default=True, help="STDOUT: print the loop points of a track in samples to the terminal; TXT: export the loop points of a track in samples and append to a loop.txt file.")
+@click.option("--fmt", type=click.Choice(("SAMPLES", "SECONDS", "TIME"), case_sensitive=False), default="SAMPLES", show_default=True, help="Export loop points formatted as samples (default), seconds, or time (mm:ss.sss).")
 @click.option("--alt-export-top", type=int, default=0, help="Alternative export format of the top N loop points instead of the best detected/chosen point. --alt-export-top -1 to export all points.")
 def export_points(**kwargs):
     """Export the best discovered or chosen loop points to a text file or to the terminal."""
@@ -214,6 +220,7 @@ def export_points(**kwargs):
 @common_loop_options
 @common_export_options
 @click.option('--tag-names', type=str, required=True, nargs=2, help='Name of the loop metadata tags to use, e.g. --tag-names LOOP_START LOOP_END')
+@click.option("--tag-offset/--no-tag-offset", is_flag=True, default=None, help="Always export second loop metadata tag as a relative length / or as an absolute length. Default: auto-detected based on tag name.")
 def tag(**kwargs):
     """Adds metadata tags of loop points to a copy of the input audio file(s)."""
     run_handler(**kwargs)
@@ -276,8 +283,8 @@ def run_handler(**kwargs):
         if kwargs.get("url", None) is not None:
             kwargs["output_dir"] = mk_outputdir(os.getcwd(), kwargs["output_dir"])
             kwargs["path"] = download_audio(kwargs["url"], kwargs["output_dir"])
-        else:
-            kwargs["output_dir"] = mk_outputdir(kwargs["path"], kwargs["output_dir"])
+        else:  
+            kwargs["output_dir"] = get_outputdir(kwargs["path"], kwargs["output_dir"])
 
         if os.path.isfile(kwargs["path"]):
             with Progress(

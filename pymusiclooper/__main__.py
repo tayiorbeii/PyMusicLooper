@@ -1,6 +1,6 @@
 """Main entry point for PyMusicLooper."""
 
-from .cli import cli_main
+from pymusiclooper.cli import cli_main
 
 def main():
     """Main entry point for the application."""

@@ -1,15 +1,17 @@
 import logging
 import os
 import sys
-from typing import List, Optional, Tuple
+from contextlib import contextmanager
+from typing import List, Literal, Optional, Tuple
 
 from rich.progress import MofNCompleteColumn, Progress, SpinnerColumn, TimeElapsedColumn
 from rich.table import Table
 
-from .analysis import LoopPair
-from .console import rich_console
-from .core import MusicLooper
-from .exceptions import AudioLoadError, LoopNotFoundError
+from pymusiclooper.analysis import LoopPair
+from pymusiclooper.console import rich_console
+from pymusiclooper.core import MusicLooper
+from pymusiclooper.exceptions import AudioLoadError, LoopNotFoundError
+from pymusiclooper.utils import DEFAULT_OUTPUT_DIRECTORY_NAME
 
 
 class LoopHandler:
@@ -23,6 +25,7 @@ class LoopHandler:
         approx_loop_position: Optional[tuple] = None,
         brute_force: bool = False,
         disable_pruning: bool = False,
+        _progressbar: Progress = None,
         **kwargs,
     ):
         if approx_loop_position is not None:
@@ -32,6 +35,7 @@ class LoopHandler:
             self.approx_loop_start = None
             self.approx_loop_end = None
 
+        self.filepath = path
         self._musiclooper = MusicLooper(filepath=path)
 
         logging.info(f"Loaded \"{path}\". Analyzing...")
@@ -47,6 +51,7 @@ class LoopHandler:
         )
         self.interactive_mode = "PML_INTERACTIVE_MODE" in os.environ
         self.in_samples = "PML_DISPLAY_SAMPLES" in os.environ
+        self._progressbar = _progressbar
 
     def get_all_loop_pairs(self) -> List[LoopPair]:
         """
@@ -68,16 +73,18 @@ class LoopHandler:
     def choose_loop_pair(self, interactive_mode=False):
         index = 0
         if self.loop_pair_list and interactive_mode:
-            index = self.interactive_handler()
+            with _hideprogressbar(self._progressbar):
+                index = self.interactive_handler()
 
         return self.loop_pair_list[index]
 
     def interactive_handler(self, show_top=25):
         preview_looper = self.musiclooper
         total_candidates = len(self.loop_pair_list)
-        more_prompt_message = "\nEnter 'more' to display additional loop points, 'all' to display all of them, or 'reset' to display the default amount." if show_top < total_candidates else ""
-        rich_console.print()
-        table = Table(title=f"Discovered loop points ({min(show_top, total_candidates)}/{total_candidates} displayed)", caption=more_prompt_message)
+        _display_more_hint_msg = "\nEnter 'more' to display additional loop points, 'all' to display all of them, or 'reset' to display the default amount." if show_top < total_candidates else ""
+        rich_console.print(f"Processing: \"{self.filepath}\"")
+        _discovered_points_msg = f"Discovered loop points\n({min(show_top, total_candidates)}/{total_candidates} displayed)"
+        table = Table(title=_discovered_points_msg, caption=_display_more_hint_msg)
         table.add_column("Index", justify="right", style="cyan", no_wrap=True)
         table.add_column("Loop Start", style="magenta")
         table.add_column("Loop End", style="green")
@@ -182,11 +189,13 @@ class LoopExportHandler(LoopHandler):
         brute_force: bool = False,
         disable_pruning: bool = False,
         split_audio: bool = False,
-        format: str = "WAV",
+        format: Literal["WAV", "FLAC", "OGG", "MP3"] = "WAV",
         to_txt: bool = False,
         to_stdout: bool = False,
+        fmt: Literal["SAMPLES", "SECONDS", "TIME"] = "SAMPLES",
         alt_export_top: int = 0,
         tag_names: Optional[Tuple[str, str]] = None,
+        tag_offset: Optional[bool] = None,
         batch_mode: bool = False,
         extended_length: float = 0,
         fade_length: float = 0,
@@ -201,18 +210,22 @@ class LoopExportHandler(LoopHandler):
             approx_loop_position=approx_loop_position,
             brute_force=brute_force,
             disable_pruning=disable_pruning,
+            **kwargs,
         )
         self.output_directory = output_dir
         self.split_audio = split_audio
         self.format = format
         self.to_txt = to_txt
         self.to_stdout = to_stdout
+        self.fmt = fmt.lower()
         self.alt_export_top = alt_export_top
         self.tag_names = tag_names
+        self.tag_offset = tag_offset
         self.batch_mode = batch_mode
         self.extended_length = extended_length
         self.disable_fade_out = disable_fade_out
         self.fade_length = fade_length
+        self._is_autocreated_outdir = False
 
     def run(self):
         self.loop_pair_list = self.get_all_loop_pairs()
@@ -220,20 +233,40 @@ class LoopExportHandler(LoopHandler):
         loop_start = chosen_loop_pair.loop_start
         loop_end = chosen_loop_pair.loop_end
 
-        if self.tag_names is not None:
-            self.tag_runner(loop_start, loop_end)
-
+        # Runners that do not need an output directory
         if self.to_stdout:
             self.stdout_export_runner(loop_start, loop_end)
-        
-        if self.to_txt:
-            self.txt_export_runner(loop_start, loop_end)
 
-        if self.split_audio:
-            self.split_audio_runner(loop_start, loop_end)
+        # TODO: refactor into a context manager instead
+        try:
+            # Runners that need an output directory
+            if (
+                self.tag_names
+                or self.to_txt
+                or self.split_audio
+                or self.extended_length
+            ) and not os.path.exists(self.output_directory):
+                os.mkdir(self.output_directory)
+                self._is_autocreated_outdir = True
 
-        if self.extended_length:
-            self.extend_track_runner(loop_start, loop_end)
+            if self.tag_names is not None:
+                self.tag_runner(loop_start, loop_end)
+
+            if self.to_txt:
+                self.txt_export_runner(loop_start, loop_end)
+
+            if self.split_audio:
+                self.split_audio_runner(loop_start, loop_end)
+
+            if self.extended_length:
+                self.extend_track_runner(loop_start, loop_end)
+        finally:
+            if (
+                self._is_autocreated_outdir
+                and os.path.exists(self.output_directory)
+                and len(os.listdir(self.output_directory)) == 0
+            ):
+                os.rmdir(self.output_directory)
 
     def split_audio_runner(self, loop_start: int, loop_end: int):
         try:
@@ -287,19 +320,15 @@ class LoopExportHandler(LoopHandler):
 
     def txt_export_runner(self, loop_start: int, loop_end: int):
         if self.alt_export_top != 0:
-            out_path = os.path.join(self.output_directory, f"{self.musiclooper.filename}.alt_export.txt")
-            pair_list_slice = (
-                    self.loop_pair_list
-                    if self.alt_export_top < 0 or self.alt_export_top >= len(self.loop_pair_list)
-                    else self.loop_pair_list[:self.alt_export_top]
-            )
-            with open(out_path, mode="w") as f:
-                for pair in pair_list_slice:
-                    f.write(f"{pair.loop_start} {pair.loop_end} {pair.note_distance} {pair.loudness_difference} {pair.score}\n")
+            self.alt_export_runner(mode="TXT")
         else:
-            self.musiclooper.export_txt(loop_start, loop_end, output_dir=self.output_directory)
+            self.musiclooper.export_txt(
+                self._fmt(loop_start),
+                self._fmt(loop_end),
+                output_dir=self.output_directory,
+            )
             out_path = os.path.join(self.output_directory, "loop.txt")
-            message = f"Successfully added \"{self.musiclooper.filename}\" loop points to \"{out_path}\""
+            message = f'Successfully added "{self.musiclooper.filename}" loop points to "{out_path}"'
             if self.batch_mode:
                 logging.info(message)
             else:
@@ -307,23 +336,43 @@ class LoopExportHandler(LoopHandler):
 
     def stdout_export_runner(self, loop_start: int, loop_end: int):
         if self.alt_export_top != 0:
-            pair_list_slice = (
-                    self.loop_pair_list
-                    if self.alt_export_top < 0 or self.alt_export_top >= len(self.loop_pair_list)
-                    else self.loop_pair_list[:self.alt_export_top]
-            )
-            for pair in pair_list_slice:
-                rich_console.print(f"{pair.loop_start} {pair.loop_end} {pair.note_distance} {pair.loudness_difference} {pair.score}")
+            self.alt_export_runner(mode="STDOUT")
         else:
-            rich_console.print(f"\nLoop points for \"{self.musiclooper.filename}\":\nLOOP_START: {loop_start}\nLOOP_END: {loop_end}\n")
+            rich_console.print(
+                f'\nLoop points for "{self.musiclooper.filename}":\n'
+                f"LOOP_START: {self._fmt(loop_start)}\n"
+                f"LOOP_END: {self._fmt(loop_end)}\n"
+            )
+
+    def alt_export_runner(self, mode: Literal["STDOUT", "TXT"]):
+        pair_list_slice = (
+            self.loop_pair_list
+            if self.alt_export_top < 0
+            or self.alt_export_top >= len(self.loop_pair_list)
+            else self.loop_pair_list[: self.alt_export_top]
+        )
+
+        def fmt_line(pair: LoopPair):
+            return f"{self._fmt(pair.loop_start)} {self._fmt(pair.loop_end)} {pair.note_distance} {pair.loudness_difference} {pair.score}\n"
+
+        formatted_lines = [fmt_line(pair) for pair in pair_list_slice]
+        if mode == "STDOUT":
+            rich_console.out(*formatted_lines, sep="", end="")
+        elif mode == "TXT":
+            out_path = os.path.join(
+                self.output_directory, f"{self.musiclooper.filename}.alt_export.txt"
+            )
+            with open(out_path, mode="w") as f:
+                f.writelines(formatted_lines)
 
     def tag_runner(self, loop_start: int, loop_end: int):        
         loop_start_tag, loop_end_tag = self.tag_names
-        self.musiclooper.export_tags(
+        loop_start, loop_end = self.musiclooper.export_tags(
             loop_start,
             loop_end,
             loop_start_tag,
             loop_end_tag,
+            is_offset=self.tag_offset,
             output_dir=self.output_directory,
         )
         message = f"Exported {loop_start_tag}: {loop_start} and {loop_end_tag}: {loop_end} of \"{self.musiclooper.filename}\" to a copy in \"{self.output_directory}\""
@@ -332,49 +381,40 @@ class LoopExportHandler(LoopHandler):
         else:
             rich_console.print(message)
 
+    def _fmt(self, samples: int):
+        if self.fmt == "seconds":
+            return str(self.musiclooper.samples_to_seconds(samples))
+        elif self.fmt == "time":
+            return str(self.musiclooper.samples_to_ftime(samples))
+        else:
+            return str(samples)
+
 
 class BatchHandler:
     def __init__(
         self,
         *,
         path: str,
-        min_duration_multiplier: float,
         output_dir: str,
-        min_loop_duration: Optional[float] = None,
-        max_loop_duration: Optional[float] = None,
-        split_audio: bool = False ,
-        format="WAV",
-        to_txt: bool = False,
-        to_stdout: bool = False,
-        alt_export_top: int = 0,
         recursive: bool = False,
         flatten: bool = False,
-        tag_names: Optional[Tuple[str, str]] = None,
-        brute_force: bool = False,
-        disable_pruning: bool = False,
-        extended_length: float = 0,
-        fade_length: float = 0,
-        disable_fade_out: bool = False,
         **kwargs,
     ):
+        """Processes all audio files in a directory with `LoopExportHandler`.
+
+        Args:
+            path (str): Path to directory.
+            output_dir (str): Output directory to use for exports. 
+            recursive (bool, optional): Process directories recursively. Defaults to False.
+            flatten (bool, optional): Flatten the output directory structure instead of preserving it when processing it recursively. Defaults to False.
+            kwargs: Additional `kwargs` are passed onto `LoopExportHandler`.
+        """
         self.directory_path = os.path.abspath(path)
-        self.min_duration_multiplier = min_duration_multiplier
-        self.min_loop_duration = min_loop_duration
-        self.max_loop_duration = max_loop_duration
         self.output_directory = output_dir
-        self.split_audio = split_audio
-        self.format = format
-        self.to_txt = to_txt
-        self.to_stdout = to_stdout
-        self.alt_export_top = alt_export_top
         self.recursive = recursive
         self.flatten = flatten
-        self.tag_names = tag_names
-        self.brute_force = brute_force
-        self.disable_pruning = disable_pruning
-        self.extended_length = extended_length
-        self.disable_fade_out = disable_fade_out
-        self.fade_length = fade_length
+        self.kwargs = kwargs
+        self._created_dirs = []
 
     def run(self):
         files = self.get_files_in_directory(
@@ -405,29 +445,18 @@ class BatchHandler:
                         f"Processing \"{os.path.relpath(file_path, self.directory_path)}\""
                     ),
                 )
-                self._batch_export_helper(
-                    path=file_path,
-                    min_duration_multiplier=self.min_duration_multiplier,
-                    min_loop_duration=self.min_loop_duration,
-                    max_loop_duration=self.max_loop_duration,
-                    brute_force=self.brute_force,
-                    disable_pruning=self.disable_pruning,
-                    format=self.format,
-                    output_dir=(
-                        self.output_directory if self.flatten else output_dirs[file_idx]
-                    ),
-                    split_audio=self.split_audio,
-                    to_txt=self.to_txt,
-                    to_stdout=self.to_stdout,
-                    alt_export_top=self.alt_export_top,
-                    tag_names=self.tag_names,
-                    extended_length=self.extended_length,
-                    fade_length=self.fade_length,
-                    disable_fade_out=self.disable_fade_out,
-                )
+                task_kwargs = {
+                    **self.kwargs,
+                    "_progressbar": progress,
+                    "path": file_path,
+                    "output_dir": self.output_directory if self.flatten else output_dirs[file_idx]
+                }
+                try:
+                    self._batch_export_helper(**task_kwargs)
+                finally:
+                    self._cleanup_empty_created_dirs()
 
-    @staticmethod
-    def clone_file_tree_structure(in_files: List[str], output_directory: str) -> List[str]:
+    def clone_file_tree_structure(self, in_files: List[str], output_directory: str) -> List[str]:
         common_path = os.path.commonpath(in_files)
         output_dirs = [
             os.path.join(
@@ -439,6 +468,7 @@ class BatchHandler:
         for out_dir in output_dirs:
             if not os.path.isdir(out_dir):
                 os.makedirs(out_dir, exist_ok=True)
+                self._created_dirs.append(out_dir)
         return output_dirs
 
     @staticmethod
@@ -466,3 +496,43 @@ class BatchHandler:
             logging.error(e)
         except Exception as e:
             logging.error(e)
+
+    def _cleanup_empty_created_dirs(self):
+        dirs_to_check = self._created_dirs
+
+        if os.path.basename(self.output_directory) == DEFAULT_OUTPUT_DIRECTORY_NAME:
+            dirs_to_check += [self.output_directory]
+
+        for directory in dirs_to_check:
+            if (
+                os.path.exists(directory)
+                and len(os.listdir(directory)) == 0
+            ):
+                os.removedirs(directory)
+
+
+@contextmanager
+def _hideprogressbar(progress: Progress):
+    """
+    Intended to pause and hide the progress bar while a prompt is active.
+
+    Based on @abrahammurciano's answer in rich issue #1535
+    https://github.com/Textualize/rich/issues/1535#issuecomment-1745297594
+    """
+    # Handle edge case where a progressbar might not exist
+    if progress is None:
+        try:
+            yield
+        finally:
+            pass
+        return
+    transient = progress.live.transient # save the old value
+    progress.live.transient = True
+    progress.stop()
+    try:
+        yield
+    finally:
+        # make space for the progress to use so it doesn't overwrite any previous lines
+        print("\n" * (len(progress.tasks) - 2))
+        progress.live.transient = transient # restore the old value
+        progress.start()

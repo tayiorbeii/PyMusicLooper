@@ -7,8 +7,8 @@ import librosa
 import numpy as np
 from numba import njit
 
-from .audio import MLAudio
-from .exceptions import LoopNotFoundError
+from pymusiclooper.audio import MLAudio
+from pymusiclooper.exceptions import LoopNotFoundError
 
 
 @dataclass
@@ -275,6 +275,9 @@ def _analyze_audio(
 
         beats = np.union1d(beats, beats_plp)
         beats = np.sort(beats)
+
+        if isinstance(bpm, np.ndarray):
+            bpm = bpm[0]
     except Exception as e:
         raise LoopNotFoundError(f"Beat analysis failed for \"{mlaudio.filename}\". Cannot continue.") from e
 
@@ -544,7 +547,7 @@ def _calculate_subseq_beat_similarity(
     )
     b1_norm = np.linalg.norm(chroma[..., b1_start:b1_end], axis=0)
     b2_norm = np.linalg.norm(chroma[..., b2_start:b2_end], axis=0)
-    cosine_sim = dot_prod / (b1_norm * b2_norm)
+    cosine_sim = dot_prod / (np.maximum(b1_norm * b2_norm, 1e-10))
 
     if max_offset < test_length:
         return np.average(

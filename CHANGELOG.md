@@ -1,5 +1,105 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [3.6.0] - 2025-11-01
+
+### Changed
+
+- Automatically detect tag names when using tag-reated features (e.g. play-tagged) by @Splendide-Imaginarius in PR ([#66](https://github.com/arkrow/PyMusicLooper/pull/66))
+- Add existing tags to looped file when using extend, implementation courtesy of @mhieronymus in ([#65](https://github.com/arkrow/PyMusicLooper/issues/65))
+
+
+## [3.5.1] - 2025-03-26
+
+### Fixed
+
+- Prevent the `--interactive/-i` mode's input from being obscured by the progress bar when batch processing ([#55](https://github.com/arkrow/PyMusicLooper/issues/55))
+- Properly handle and auto cleanup output directories in batch processing mode  (related to [#29](https://github.com/arkrow/PyMusicLooper/issues/29))
+
+
+## [3.5.0] - 2025-03-15
+
+### Added
+
+- Support exporting and reading `LOOPLENGTH` tag by @Splendide-Imaginarius in PR #47. Adds the `--tag-offset/--no-tag-offset` option to `tag` and `play-tagged` to customize the behaviour (default: auto).
+
+### Changed
+
+- Migrate dependency management from poetry to uv
+- Added support for Python 3.13
+- Dropped support for Python 3.9
+
+### Fixed
+
+- Properly handle and auto cleanup default output directory (Fixes [#29](https://github.com/arkrow/PyMusicLooper/issues/29))
+- Prevent division by zero in _calculate_subseq_beat_similarity by @Chlorobyte-but-real in PR [#53](https://github.com/arkrow/PyMusicLooper/pulls/53)
+- Improve experience when system does not have PortAudio installed yet by @matchu in [#49](https://github.com/arkrow/PyMusicLooper/pulls/49)
+
+
+## [3.4.2] - 2024-09-04
+
+### Changed
+
+- Updated dependencies.
+
+### Fixed
+
+- The output of `--alt-export-top` wrapping in some edge cases ([#43](https://github.com/arkrow/PyMusicLooper/issues/43))
+- Active audio streams interrupted in some cases on Windows ([#21](https://github.com/arkrow/PyMusicLooper/issues/21))
+
+## [3.4.1] - 2024-05-05
+
+### Changed
+
+- Updated dependencies.
+- Minor internal changes for deprecated library functionalities/imports.
+
+### Fixed
+
+- BPM is now correctly derived from librosa 0.10.2's updated beat_track function.
+
+## [3.4.0] - 2024-04-25
+
+### Added
+
+- Added proper Python 3.12 support.
+
+### Changed
+
+- Updated dependencies.
+
+### Removed
+
+- Support for Python 3.8 has been removed. The minimum supported Python version for PyMusicLooper is now Python 3.9.
+
+## [3.3.0] - 2024-03-21
+
+### Added
+
+- New option in `export-points`: `--fmt`, to customize the exported loop points format. Options: `samples` (default), `seconds`, or `time` (mm:ss.sss).
+
+### Changed
+
+- Minor internal code clean-up and refactoring.
+- Updated dependencies.
+
+## [3.2.4] - 2024-01-20
+
+### Fixed
+
+- Output directory is created only when needed for PyMusicLooper exports, instead of pre-emptively.
+- The absolute path of the export file/directory is now always returned, even if the provided output directory is relative, for clarity.
+
+## [3.2.3] - 2024-01-20
+
+### Fixed
+
+- Import `taglib` only when required, isolating `taglib` ImportErrors to the affected functions only, instead of blocking the use of the entire library.
+
 ## [3.2.2] - 2023-12-03
 
 ### Fixed

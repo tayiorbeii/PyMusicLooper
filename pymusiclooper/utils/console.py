@@ -46,8 +46,8 @@ _common_option_groups = _option_groups()
 _OPTION_GROUPS = {
     "pymusiclooper play": _common_option_groups,
     "pymusiclooper split-audio": _common_option_groups,
-    "pymusiclooper tag": _option_groups(["--tag-names"]),
-    "pymusiclooper export-points": _option_groups(["--export-to", "--alt-export-top"]),
+    "pymusiclooper tag": _option_groups(["--tag-names", "--tag-offset"]),
+    "pymusiclooper export-points": _option_groups(["--export-to", "--alt-export-top", "--fmt"]),
     "pymusiclooper extend": _option_groups(["--extended-length", "--fade-length", "--disable-fade-out"]),
     "pymusiclooper jukebox": _option_groups(["--target-duration", "--similarity-threshold", "--jump-probability", "--max-connections", "--min-section-duration", "--max-section-duration", "--prefer-similar", "--seed", "--fade-duration"]),
 }
