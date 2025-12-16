@@ -14,6 +14,7 @@ class LoopHandler:
     def __init__(
         self,
         *,
+        config=None,
         path: str,
         min_duration_multiplier: float,
         min_loop_duration: Optional[float] = None,
@@ -43,8 +44,10 @@ class LoopHandler:
             brute_force=brute_force,
             disable_pruning=disable_pruning,
         )
-        self.interactive_mode = "PML_INTERACTIVE_MODE" in os.environ
-        self.in_samples = "PML_DISPLAY_SAMPLES" in os.environ
+        self.config = config
+        # Fallback to os.environ for backward compatibility if config not provided
+        self.interactive_mode = config.interactive_mode if config else "PML_INTERACTIVE_MODE" in os.environ
+        self.in_samples = config.display_samples if config else "PML_DISPLAY_SAMPLES" in os.environ
 
     def get_all_loop_pairs(self) -> List[LoopPair]:
         """
@@ -171,6 +174,7 @@ class LoopExportHandler(LoopHandler):
     def __init__(
         self,
         *,
+        config=None,
         path: str,
         min_duration_multiplier: float,
         output_dir: str,
@@ -192,6 +196,7 @@ class LoopExportHandler(LoopHandler):
         **kwargs,
     ):
         super().__init__(
+            config=config,
             path=path,
             min_duration_multiplier=min_duration_multiplier,
             min_loop_duration=min_loop_duration,
@@ -335,6 +340,7 @@ class BatchHandler:
     def __init__(
         self,
         *,
+        config=None,
         path: str,
         min_duration_multiplier: float,
         output_dir: str,
@@ -355,6 +361,7 @@ class BatchHandler:
         disable_fade_out: bool = False,
         **kwargs,
     ):
+        self.config = config
         self.directory_path = os.path.abspath(path)
         self.min_duration_multiplier = min_duration_multiplier
         self.min_loop_duration = min_loop_duration
@@ -455,10 +462,9 @@ class BatchHandler:
             ]
         )
 
-    @staticmethod
-    def _batch_export_helper(**kwargs):
+    def _batch_export_helper(self, **kwargs):
         try:
-            export_handler = LoopExportHandler(**kwargs, batch_mode=True)
+            export_handler = LoopExportHandler(config=self.config, **kwargs, batch_mode=True)
             export_handler.run()
         except (AudioLoadError, LoopNotFoundError) as e:
             logging.error(e)
@@ -472,6 +478,7 @@ class JukeboxHandler:
     def __init__(
         self,
         *,
+        config=None,
         path: str,
         output_dir: str,
         target_duration: float,
@@ -488,6 +495,7 @@ class JukeboxHandler:
     ):
         from ..core import InfiniteJukebox, MLAudio
         
+        self.config = config
         self.path = path
         self.output_dir = output_dir
         self.target_duration = target_duration

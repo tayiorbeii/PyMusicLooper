@@ -16,6 +16,7 @@ from click_option_group import RequiredMutuallyExclusiveOptionGroup, optgroup
 from click_params import URL as UrlParamType
 
 from pymusiclooper import __version__
+from pymusiclooper.cli_config import CliConfig
 from pymusiclooper.console import _COMMAND_GROUPS, _OPTION_GROUPS, rich_console
 from pymusiclooper.core import MusicLooper
 from pymusiclooper.exceptions import AudioLoadError, LoopNotFoundError
@@ -35,22 +36,23 @@ click.rich_click.USE_RICH_MARKUP = True
 @click.option("--interactive", "-i", is_flag=True, default=False, help="Enables interactive mode to manually preview/choose the desired loop point.")
 @click.option("--samples", "-s", is_flag=True, default=False, help="Display all the loop points shown in interactive mode in sample points instead of the default mm:ss.sss format.")
 @click.version_option(__version__, prog_name="pymusiclooper", message="%(prog)s %(version)s")
-def cli_main(debug, verbose, interactive, samples):
+@click.pass_context
+def cli_main(ctx, debug, verbose, interactive, samples):
     """A program for repeating music seamlessly and endlessly, by automatically finding the best loop points."""
-    # Store flags in environ instead of passing them as parameters
+    # Create config object and store in Click context
+    config = CliConfig(
+        debug=debug,
+        verbose=verbose,
+        interactive_mode=interactive,
+        display_samples=samples,
+    )
+    ctx.obj = config
+
     if debug:
-        os.environ["PML_DEBUG"] = "1"
         warnings.simplefilter("default")
         rich_traceback_handler(console=rich_console, suppress=[click])
     else:
         warnings.filterwarnings("ignore")
-
-    if verbose:
-        os.environ["PML_VERBOSE"] = "1"
-    if interactive:
-        os.environ["PML_INTERACTIVE_MODE"] = "1"
-    if samples:
-        os.environ["PML_DISPLAY_SAMPLES"] = "1"
 
     if verbose:
         logging.basicConfig(format="%(message)s", level=logging.INFO, handlers=[RichHandler(level=logging.INFO, console=rich_console, rich_tracebacks=True, show_path=debug, show_time=False, tracebacks_suppress=[click])])
@@ -99,11 +101,12 @@ def common_export_options(f):
 @cli_main.command()
 @common_path_options
 @common_loop_options
-def play(**kwargs):
+@click.pass_obj
+def play(config, **kwargs):
     """Play an audio file on repeat from the terminal with the best discovered loop points, or a chosen point if interactive mode is active."""
     try:
         if kwargs.get("url", None) is not None:
-            kwargs["path"] = download_audio(kwargs["url"], tempfile.gettempdir())
+            kwargs["path"] = download_audio(kwargs["url"], tempfile.gettempdir(), verbose=config.verbose)
 
         with Progress(
             SpinnerColumn(),
@@ -113,15 +116,12 @@ def play(**kwargs):
             transient=True
         ) as progress:
             progress.add_task("Processing", total=None)
-            handler = LoopHandler(**kwargs)
+            handler = LoopHandler(config=config, **kwargs)
 
-        in_samples = "PML_DISPLAY_SAMPLES" in os.environ
-        interactive_mode = "PML_INTERACTIVE_MODE" in os.environ
+        chosen_loop_pair = handler.choose_loop_pair(interactive_mode=config.interactive_mode)
 
-        chosen_loop_pair = handler.choose_loop_pair(interactive_mode=interactive_mode)
-
-        start_time = handler.format_time(chosen_loop_pair.loop_start, in_samples=in_samples)
-        end_time = handler.format_time(chosen_loop_pair.loop_end, in_samples=in_samples)
+        start_time = handler.format_time(chosen_loop_pair.loop_start, in_samples=config.display_samples)
+        end_time = handler.format_time(chosen_loop_pair.loop_end, in_samples=config.display_samples)
 
         rich_console.print(
             "\nPlaying with looping active from [green]{}[/] back to [green]{}[/]; similarity: {:.2%}".format(
@@ -138,14 +138,15 @@ def play(**kwargs):
         # Already logged from youtube.py
         pass
     except (AudioLoadError, LoopNotFoundError, Exception) as e:
-        print_exception(e)
+        print_exception(e, config.debug)
 
 
 @cli_main.command()
 @click.option('--path', type=click.Path(exists=True), required=True, help='Path to the audio file.')
 @click.option("--tag-names", type=str, required=False, nargs=2, help="Name of the loop metadata tags to read from, e.g. --tag-names LOOP_START LOOP_END  (note: values must be integers and in sample units). Default: auto-detected.")
 @click.option("--tag-offset/--no-tag-offset", is_flag=True, default=None, help="Always parse second loop metadata tag as a relative length / or as an absolute length. Default: auto-detected based on tag name.")
-def play_tagged(path, tag_names, tag_offset):
+@click.pass_obj
+def play_tagged(config, path, tag_names, tag_offset):
     """Skips loop analysis and reads the loop points directly from the tags present in the file."""
     try:
         if tag_names is None:
@@ -154,16 +155,14 @@ def play_tagged(path, tag_names, tag_offset):
         looper = MusicLooper(path)
         loop_start, loop_end = looper.read_tags(tag_names[0], tag_names[1], tag_offset)
 
-        in_samples = "PML_DISPLAY_SAMPLES" in os.environ
-
         start_time = (
             loop_start
-            if in_samples
+            if config.display_samples
             else looper.samples_to_ftime(loop_start)
         )
         end_time = (
             loop_end
-            if in_samples
+            if config.display_samples
             else looper.samples_to_ftime(loop_end)
         )
 
@@ -173,7 +172,7 @@ def play_tagged(path, tag_names, tag_offset):
         looper.play_looping(loop_start, loop_end)
 
     except Exception as e:
-        print_exception(e)
+        print_exception(e, config.debug)
 
 
 @cli_main.command()
@@ -181,10 +180,11 @@ def play_tagged(path, tag_names, tag_offset):
 @common_loop_options
 @common_export_options
 @click.option('--format', type=click.Choice(("WAV", "FLAC", "OGG", "MP3"), case_sensitive=False), default="WAV", show_default=True, help="Audio format to use for the exported split audio files.")
-def split_audio(**kwargs):
+@click.pass_obj
+def split_audio(config, **kwargs):
     """Split the input audio into intro, loop and outro sections."""
     kwargs["split_audio"] = True
-    run_handler(**kwargs)
+    run_handler(config, **kwargs)
 
 @cli_main.command()
 @common_path_options
@@ -194,9 +194,10 @@ def split_audio(**kwargs):
 @click.option('--extended-length', type=float, required=True, help="Desired length of the extended looped track in seconds. [Must be longer than the audio's original length.]")
 @click.option('--fade-length', type=float, default=5, show_default=True, help="Desired length of the loop fade out in seconds.")
 @click.option('--disable-fade-out', is_flag=True, default=False, help="Extend the track with all its sections (intro/loop/outro) without fading out. --extended-length will be treated as an 'at least' constraint.")
-def extend(**kwargs):
+@click.pass_obj
+def extend(config, **kwargs):
     """Create an extended version of the input audio by looping it to a specific length."""
-    run_handler(**kwargs)
+    run_handler(config, **kwargs)
 
 
 @cli_main.command()
@@ -206,13 +207,14 @@ def extend(**kwargs):
 @click.option("--export-to", type=click.Choice(("STDOUT", "TXT"), case_sensitive=False), default="STDOUT", show_default=True, help="STDOUT: print the loop points of a track in samples to the terminal; TXT: export the loop points of a track in samples and append to a loop.txt file.")
 @click.option("--fmt", type=click.Choice(("SAMPLES", "SECONDS", "TIME"), case_sensitive=False), default="SAMPLES", show_default=True, help="Export loop points formatted as samples (default), seconds, or time (mm:ss.sss).")
 @click.option("--alt-export-top", type=int, default=0, help="Alternative export format of the top N loop points instead of the best detected/chosen point. --alt-export-top -1 to export all points.")
-def export_points(**kwargs):
+@click.pass_obj
+def export_points(config, **kwargs):
     """Export the best discovered or chosen loop points to a text file or to the terminal."""
     kwargs["to_stdout"] = kwargs["export_to"].upper() == "STDOUT"
     kwargs["to_txt"] = kwargs["export_to"].upper() == "TXT"
     kwargs.pop("export_to", "")
 
-    run_handler(**kwargs)
+    run_handler(config, **kwargs)
 
 
 @cli_main.command()
@@ -221,9 +223,10 @@ def export_points(**kwargs):
 @common_export_options
 @click.option('--tag-names', type=str, required=True, nargs=2, help='Name of the loop metadata tags to use, e.g. --tag-names LOOP_START LOOP_END')
 @click.option("--tag-offset/--no-tag-offset", is_flag=True, default=None, help="Always export second loop metadata tag as a relative length / or as an absolute length. Default: auto-detected based on tag name.")
-def tag(**kwargs):
+@click.pass_obj
+def tag(config, **kwargs):
     """Adds metadata tags of loop points to a copy of the input audio file(s)."""
-    run_handler(**kwargs)
+    run_handler(config, **kwargs)
 
 
 @cli_main.command()
@@ -240,24 +243,25 @@ def tag(**kwargs):
 @click.option('--seed', type=int, default=None, help='Random seed for reproducible results.')
 @click.option('--fade-duration', type=click.FloatRange(min=0.0), default=0.1, show_default=True, help='Duration of crossfade between sections in seconds.')
 @click.option('--suggest-ranges', is_flag=True, default=False, help='Display recommended parameter ranges and exit.')
-def jukebox(**kwargs):
+@click.pass_obj
+def jukebox(config, **kwargs):
     """Create an Infinite Jukebox-style remix by rearranging similar sections of the song."""
     # If user only wants the suggested ranges, show them and exit early.
     if kwargs.pop("suggest_ranges", False):
         rich_console.print("[bold cyan]Recommended Parameter Ranges[/]")
-        rich_console.print("• min-section-duration: 0.25 – 2.0 s (smaller enables more, shorter sections)")
-        rich_console.print("• max-section-duration: 4 – 12 s (upper bound for section length)")
-        rich_console.print("• similarity-threshold: 0.40 – 0.80 (lower = more connections, higher = stricter)")
-        rich_console.print("• jump-probability: 0.20 – 0.50 (chance of jumping vs. sequential play)")
-        rich_console.print("• max-connections: 5 – 20 (connections kept per section)")
-        rich_console.print("• fade-duration: 0.05 – 0.50 s (cross-fade length between sections)")
+        rich_console.print("• min-section-duration: 0.25 – 2.0 s (smaller enables more, shorter sections)")
+        rich_console.print("• max-section-duration: 4 – 12 s (upper bound for section length)")
+        rich_console.print("• similarity-threshold: 0.40 – 0.80 (lower = more connections, higher = stricter)")
+        rich_console.print("• jump-probability: 0.20 – 0.50 (chance of jumping vs. sequential play)")
+        rich_console.print("• max-connections: 5 – 20 (connections kept per section)")
+        rich_console.print("• fade-duration: 0.05 – 0.50 s (cross-fade length between sections)")
         rich_console.print("\nTune these depending on song tempo/structure; shorter sections and lower similarity make a more chaotic remix, higher values create fewer, longer jumps.")
         return
 
     try:
         if kwargs.get("url", None) is not None:
             kwargs["output_dir"] = mk_outputdir(os.getcwd(), kwargs["output_dir"])
-            kwargs["path"] = download_audio(kwargs["url"], kwargs["output_dir"])
+            kwargs["path"] = download_audio(kwargs["url"], kwargs["output_dir"], verbose=config.verbose)
         else:
             kwargs["output_dir"] = mk_outputdir(kwargs["path"], kwargs["output_dir"])
 
@@ -270,21 +274,21 @@ def jukebox(**kwargs):
                 transient=True
             ) as progress:
                 progress.add_task("Analyzing song structure...", total=None)
-                jukebox_handler = JukeboxHandler(**kwargs)
+                jukebox_handler = JukeboxHandler(config=config, **kwargs)
             jukebox_handler.run()
         else:
             rich_console.print(f"[red]Error: File not found: {kwargs['path']}[/]")
     except (AudioLoadError, LoopNotFoundError, Exception) as e:
-        print_exception(e)
+        print_exception(e, config.debug)
 
 
-def run_handler(**kwargs):
+def run_handler(config, **kwargs):
     try:
         if kwargs.get("url", None) is not None:
             kwargs["output_dir"] = mk_outputdir(os.getcwd(), kwargs["output_dir"])
-            kwargs["path"] = download_audio(kwargs["url"], kwargs["output_dir"])
-        else:  
-            kwargs["output_dir"] = get_outputdir(kwargs["path"], kwargs["output_dir"])
+            kwargs["path"] = download_audio(kwargs["url"], kwargs["output_dir"], verbose=config.verbose)
+        else:
+            kwargs["output_dir"] = mk_outputdir(kwargs["path"], kwargs["output_dir"])
 
         if os.path.isfile(kwargs["path"]):
             with Progress(
@@ -295,19 +299,19 @@ def run_handler(**kwargs):
                 transient=True
             ) as progress:
                 progress.add_task("Processing", total=None)
-                export_handler = LoopExportHandler(**kwargs)
+                export_handler = LoopExportHandler(config=config, **kwargs)
             export_handler.run()
         else:
-            batch_handler = BatchHandler(**kwargs)
+            batch_handler = BatchHandler(config=config, **kwargs)
             batch_handler.run()
     except YoutubeDLError:
         # Already logged from youtube.py
         pass
     except (AudioLoadError, LoopNotFoundError, Exception) as e:
-        print_exception(e)
+        print_exception(e, config.debug)
 
-def print_exception(e: Exception):
-    if "PML_DEBUG" in os.environ:
+def print_exception(e: Exception, debug: bool = False):
+    if debug:
         rich_console.print_exception(suppress=[click])
     else:
         logging.error(e)

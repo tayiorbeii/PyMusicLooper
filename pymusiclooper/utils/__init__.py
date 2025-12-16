@@ -27,17 +27,18 @@ def mk_outputdir(path: str, output_dir: Optional[str] = None) -> str:
     return output_dir_to_use
 
 
-def download_audio(url: str, output_dir: str) -> str:
+def download_audio(url: str, output_dir: str, verbose: bool = False) -> str:
     """Downloads an audio file using yt-dlp from the URL provided and returns its filepath
 
     Args:
         url (str): The URL of the stream to pass to yt-dlp to extract audio from
         output_dir (str): The directory path to store the downloaded audio to
+        verbose (bool): Enable verbose logging from yt-dlp
 
     Returns:
         str: The filepath of the extracted audio
     """
-    yt = YoutubeDownloader(url, output_dir)
+    yt = YoutubeDownloader(url, output_dir, verbose=verbose)
     return yt.filepath
 
 __all__ = ['mk_outputdir', 'download_audio']

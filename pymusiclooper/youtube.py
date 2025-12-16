@@ -6,8 +6,8 @@ yt_dlp = lazy.load("yt_dlp")
 
 
 class YtdLogger:
-    def __init__(self) -> None:
-        self.verbose = "PML_VERBOSE" in os.environ
+    def __init__(self, verbose: bool = False) -> None:
+        self.verbose = verbose
 
     def debug(self, msg):
         # For compatibility with youtube-dl, both debug and info are passed into debug
@@ -35,9 +35,9 @@ class YtdLogger:
 
 
 class YoutubeDownloader:
-    def __init__(self, url, output_path):
+    def __init__(self, url, output_path, verbose: bool = False):
         ydl_opts = {
-            "logger": YtdLogger(),
+            "logger": YtdLogger(verbose=verbose),
             "format": "bestaudio/best",
             "postprocessors": [
                 {"key": "SponsorBlock", "when": "pre_process"},
