@@ -19,6 +19,42 @@ from .analysis import _analyze_audio, _calculate_subseq_beat_similarity, _weight
 from .audio import MLAudio
 
 
+
+# ====================================================================
+# Magic Constants
+# ====================================================================
+
+# Similarity & connection thresholds
+DEFAULT_SIMILARITY_THRESHOLD = 0.7  # Minimum similarity score for valid connections (0.0-1.0)
+DEFAULT_MAX_CONNECTIONS_PER_SECTION = 10  # Maximum number of connections to track per section
+PREFILTER_K_MULTIPLIER = 5  # Multiplier for fast pre-filter candidate selection
+
+# Section duration constraints (in seconds)
+DEFAULT_MIN_SECTION_DURATION = 2.0  # Minimum section duration for analysis
+DEFAULT_MAX_SECTION_DURATION = 8.0  # Maximum section duration for analysis
+DEFAULT_MIN_SECTION_GAP = 5.0  # Minimum gap between reused sections (in seconds)
+
+# Clustering & composition
+DEFAULT_NUM_SECTION_CLUSTERS = 4  # Number of clusters for high-level song structure
+DEFAULT_MAX_USAGE_PER_SECTION = 3  # Maximum times a section can be reused in composition
+DEFAULT_CLUSTER_DIVERSITY_PROB = 0.3  # Probability of forcing inter-cluster transitions
+
+# Beat & analysis parameters
+MIN_BEATS_PER_SECTION = 4  # Minimum number of beats to constitute a section
+DEFAULT_NUM_TEST_BEATS = 8  # Number of beats to use for detailed similarity testing
+LIBROSA_HOP_LENGTH = 512  # Standard librosa hop length (matches librosa defaults)
+MIN_TEST_DURATION_FRAMES = 20  # Minimum frames for weights calculation
+WEIGHTS_START = 10  # Starting value for weight decay sequence
+WEIGHTS_STOP = 1  # Ending value for weight decay sequence
+
+# K-means clustering
+KMEANS_MAX_ITERATIONS = 100  # Maximum iterations for k-means convergence
+
+# Audio export
+DEFAULT_FADE_DURATION = 0.1  # Crossfade duration between sections (in seconds)
+DEFAULT_JUMP_PROBABILITY = 0.3  # Probability of jumping to similar section vs continuing
+
+
 @dataclass
 class SectionNode:
     """Represents a section in the song that can be jumped to/from."""
@@ -58,11 +94,11 @@ class InfiniteJukebox:
     """
     
     def __init__(self, 
-                 similarity_threshold: float = 0.7,
-                 max_connections_per_section: int = 10,
-                 min_section_duration: float = 2.0,
-                 max_section_duration: float = 8.0,
-                 num_section_clusters: int = 4,
+                 similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+                 max_connections_per_section: int = DEFAULT_MAX_CONNECTIONS_PER_SECTION,
+                 min_section_duration: float = DEFAULT_MIN_SECTION_DURATION,
+                 max_section_duration: float = DEFAULT_MAX_SECTION_DURATION,
+                 num_section_clusters: int = DEFAULT_NUM_SECTION_CLUSTERS,
                  use_loops: bool = True):
         """
         Initialize the Infinite Jukebox remixer.
@@ -91,12 +127,9 @@ class InfiniteJukebox:
             mlaudio: The audio file to analyze
         """
         logging.info("Starting Infinite Jukebox analysis...")
-        print("DEBUG: In analyze_song method")
         
         # Get audio features using existing PyMusicLooper analysis
-        print("DEBUG: About to call _analyze_audio")
         chroma, power_db, bpm, beats = _analyze_audio(mlaudio)
-        print(f"DEBUG: _analyze_audio returned - chroma shape: {chroma.shape}, power_db shape: {power_db.shape}, bpm: {bpm}, beats length: {len(beats)}")
         
         # Convert bpm to scalar if it's an array
         if hasattr(bpm, 'item'):
@@ -106,7 +139,6 @@ class InfiniteJukebox:
         else:
             bpm = float(bpm)
         
-        print(f"DEBUG: bpm converted to scalar: {bpm}, type: {type(bpm)}")
         
         # Store for potential retry
         self.chroma = chroma
@@ -138,7 +170,6 @@ class InfiniteJukebox:
         
         self.nodes = []
         
-        print(f"DEBUG: Creating sections - bpm type: {type(bpm)}, value: {bpm}")
         logging.info(f"Creating sections from {len(beats)} beats, BPM: {bpm:.1f}")
         
         # Show min/max frames also in seconds for clarity
@@ -155,7 +186,7 @@ class InfiniteJukebox:
         
         for i, beat_frame in enumerate(beats):
             # Calculate section duration based on tempo
-            beats_per_section = max(4, int(bpm / 60 * self.min_section_duration))
+            beats_per_section = max(MIN_BEATS_PER_SECTION, int(bpm / 60 * self.min_section_duration))
             
             # Find the end of this section
             if i + beats_per_section < len(beats):
@@ -189,7 +220,6 @@ class InfiniteJukebox:
                 continue
                 
             # Create the section node
-            print(f"DEBUG: Creating section node for beat {i}")
             node = SectionNode(
                 start_frame=int(beat_frame),
                 end_frame=int(end_frame),
@@ -201,7 +231,6 @@ class InfiniteJukebox:
                 connections=[]
             )
             self.nodes.append(node)
-            print(f"DEBUG: Section node created and added. Total nodes: {len(self.nodes)}")
             
         logging.info(f"Created {len(self.nodes)} sections")
     
@@ -247,17 +276,17 @@ class InfiniteJukebox:
 
         # We'll only run the expensive similarity calc on the *k* most similar
         # sections (above threshold) for each node.
-        prefilter_k = self.max_connections_per_section * 5
+        prefilter_k = self.max_connections_per_section * PREFILTER_K_MULTIPLIER
 
         # Calculate test-duration and weights once for the detailed metric.
         beats_per_second = bpm / 60.0
-        num_test_beats = 8
+        num_test_beats = DEFAULT_NUM_TEST_BEATS
         seconds_to_test = num_test_beats / beats_per_second
         # Frames per second in the chroma representation: librosa defaults
-        # hop_length=512.
+        # hop_length=LIBROSA_HOP_LENGTH.
         frames_per_second = mlaudio.rate / 512  # ≈ 86 for 44.1 kHz
         test_duration = int(seconds_to_test * frames_per_second)
-        weights = _weights(min(test_duration, 20), start=10, stop=1)
+        weights = _weights(min(test_duration, MIN_TEST_DURATION_FRAMES), start=WEIGHTS_START, stop=WEIGHTS_STOP)
 
         logging.info(
             "Finding connections with fast pre-filter: nodes=%d, k=%d, threshold=%.2f",
@@ -324,7 +353,6 @@ class InfiniteJukebox:
                                     weights: np.ndarray) -> float:
         """Calculate similarity between two sections using existing similarity algorithm."""
         # Use the existing similarity calculation from PyMusicLooper
-        print(f"DEBUG: _calculate_section_similarity called with node_a.start_frame: {node_a.start_frame}, node_b.start_frame: {node_b.start_frame}")
         
         result = _calculate_subseq_beat_similarity(
             node_a.start_frame,
@@ -334,7 +362,6 @@ class InfiniteJukebox:
             weights=weights
         )
         
-        print(f"DEBUG: _calculate_subseq_beat_similarity returned type: {type(result)}, value: {result}")
         return result
     
     def _calculate_note_distance(self, node_a: SectionNode, node_b: SectionNode) -> float:
@@ -449,7 +476,7 @@ class InfiniteJukebox:
         rng = np.random.default_rng(0)
         centroids = data[rng.choice(len(data), size=k, replace=False)]  # (k, 12)
 
-        for _ in range(100):  # max iterations
+        for _ in range(KMEANS_MAX_ITERATIONS):  # max iterations
             # Assign step
             dist = np.linalg.norm(data[:, None, :] - centroids[None, :, :], axis=2)  # (N, k)
             labels = np.argmin(dist, axis=1)  # (N,)
@@ -578,7 +605,7 @@ class InfiniteJukebox:
         mlaudio: MLAudio,
         composition_sections: List[SectionNode],
         output_path: str,
-        fade_duration: float = 0.1,
+        fade_duration: float = DEFAULT_FADE_DURATION,
     ) -> None:
         """Wrapper around *export_remix_audio* for clarity."""
         self.export_remix_audio(
@@ -591,7 +618,7 @@ class InfiniteJukebox:
     def generate_remix(self, 
                       mlaudio: MLAudio,
                       target_duration: float,
-                      jump_probability: float = 0.3,
+                      jump_probability: float = DEFAULT_JUMP_PROBABILITY,
                       prefer_similar: bool = True,
                       seed: Optional[int] = None) -> List[SectionNode]:
         """
@@ -666,17 +693,12 @@ class InfiniteJukebox:
         for node in self.nodes:
             all_scores.extend([conn.similarity_score for conn in node.connections])
         
-        print(f"DEBUG: get_connection_stats - all_scores type: {type(all_scores)}")
-        print(f"DEBUG: get_connection_stats - all_scores sample: {all_scores[:5] if len(all_scores) > 5 else all_scores}")
         
         if all_scores:
             avg_score = float(np.mean(all_scores))
             max_score = float(np.max(all_scores))
             min_score = float(np.min(all_scores))
             
-            print(f"DEBUG: avg_score type: {type(avg_score)}, value: {avg_score}")
-            print(f"DEBUG: max_score type: {type(max_score)}, value: {max_score}")
-            print(f"DEBUG: min_score type: {type(min_score)}, value: {min_score}")
         else:
             avg_score = max_score = min_score = 0
         
